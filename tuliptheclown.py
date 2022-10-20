@@ -51,7 +51,7 @@ class Response:
 
         self._headers = [
             ("X-Error", str(exc)),
-            ("Content-Type", "plain/text; encoding='utf8'"),
+            ("Content-Type", "text/plain; charset=UTF-8"),
         ]
         self._bytes_iter = (payload,)
 
