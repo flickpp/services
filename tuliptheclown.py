@@ -39,12 +39,12 @@ class Response:
 
     def set_not_found(self):
         self._status = "404 Not Found"
-        self._content_length = None
+        self._content_length = 0
         self._bytes_iter = (b"",)
         
     def bad_request_exc(self, reason, exc):
         self._status = f"400 {reason}"
-        payload = "".join(traceback.format_exception(exc))
+        payload = "".join(traceback.format_exception_only(exc))
         payload = bytes(payload, encoding='utf8')
         self._content_length = len(payload)
 
@@ -147,7 +147,7 @@ def app(environ, start_response):
 
             break
     else:
-        Response.set_not_found()
+        resp.set_not_found()
 
     start_response(resp.status, resp.headers)
     return resp.bytes_iter()
