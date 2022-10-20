@@ -44,7 +44,8 @@ class Response:
         
     def bad_request_exc(self, reason, exc):
         self._status = f"400 {reason}"
-        payload = "".join(traceback.format_exception_only(exc))
+        tb = traceback.TracebackException.from_exception(exc)
+        payload = "".join(tb.format())
         payload = bytes(payload, encoding='utf8')
         self._content_length = len(payload)
 
