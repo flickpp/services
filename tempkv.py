@@ -59,7 +59,7 @@ class TempKvClient:
             if not isinstance(value, (bytes, bytearray)):
                 raise TypeError("temp kv value must be a byte-like object")
 
-            xor_key = os.urandom(min(XOR_KEY_LEN, len(value)))
+            xor_key = os.urandom(XOR_KEY_LEN)
             value = xor_value(xor_key, value)
 
             # encrypt the xor_key
