@@ -1,154 +1,122 @@
-import json as js
-import traceback
+import os
+import struct
+from time import time
 
 from casket import logger
 
-from doolally import validate
-from schemas import ContactByEmailReq, ContactByNumberReq
+from framework import app, post_json_endpoint, EmptyResponse, get_json_endpoint
+from schemas import ContactByEmailReq, ContactByNumberReq, ContactQueryResp
+from tempkv import tempkv_client, TempKvException
 
 
-class Request:
-    @classmethod
-    def from_environ(cls, environ):
-        self = cls()
-        self._environ = environ
-        self._body = None
-
-        return self
-
-    def path(self):
-        return self._environ['PATH_INFO'].lower()
-
-    def method(self):
-        return self._environ['REQUEST_METHOD']
-
-    def body(self):
-        if self._body is None:
-            self._body = self._environ['wsgi.input'].read()
-
-        return self._body
+THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
 
 
-class Response:
-    def __init__(self, req):
-        self._req = req
-        self._status = None
-        self._headers = []
-        self._bytes_iter = (b"",)
-        self._content_length = None
+class Throttle:
+    def __init__(self):
+        try:
+            self._kv_client = tempkv_client()
+        except TempKvException:
+            self._kv_client = None
+            logger.warn("couldn't open tempkv client - there is no throttle")
 
-    def set_not_found(self):
-        self._status = "404 Not Found"
-        self._content_length = 0
-        self._bytes_iter = (b"",)
-        
-    def bad_request_exc(self, reason, exc):
-        self._status = f"400 {reason}"
-        tb = traceback.TracebackException.from_exception(exc)
-        payload = "".join(tb.format())
-        payload = bytes(payload, encoding='utf8')
-        self._content_length = len(payload)
+    def mget(self, *keys):
+        if self._kv_client is None:
+            return [None] * len(keys)
 
-        self._headers = [
-            ("X-Error", str(exc)),
-            ("Content-Type", "text/plain; charset=UTF-8"),
-        ]
-        self._bytes_iter = (payload,)
+        try:
+            return self._kv_client.mget(*keys)
+        except TempKvException as exc:
+            logger.warn("couldn't get keys in tempkv client - there is no throttle", {
+                "error": str(exc),
+            })
+            self._kv_client = None
+            return [None] * len(keys)
 
-    def set_header(self, status, headers):
-        self._status = status
-        self._headers = headers
+    def get(self, key):
+        return self.mget(key)[0]
 
-    def set_header_called(self):
-        return self._status is not None
+    def mset(self, mapping):
+        if self._kv_client is None:
+            return
 
-    def set_content_bytes(self, bytes):
-        self._content_length = len(bytes)
-        self._bytes_iter = (bytes,)
-
-    @property
-    def headers(self):
-        if self._content_length is not None:
-            for (name, _) in self._headers:
-                if name.lower() == "content-length":
-                    break
-            else:
-                self._headers.append(("Content-Length", str(self._content_length)))
-
-        return self._headers
-
-    @property
-    def status(self):
-        return self._status
-
-    def bytes_iter(self):
-        return self._bytes_iter
+        try:
+            self._kv_client.mset(mapping)
+        except TempKvException as exc:
+            logger.warn("couldn't set keys in tempkv client - there is no throttle", {
+                "error": str(exc),
+            })
+            self._kv_client = None
 
 
-def contact_by_email(req, resp):
-    if req.path() != "/contact/byemail" or req.method() != "POST":
-        return False
+def current_time():
+    now = int(time())
+    return struct.pack("<L", now)
 
-    try:
-        body = js.loads(req.body())
-        validate(body, ContactByEmailReq)
-    except Exception as exc:
-        resp.bad_request_exc("invalid body", exc)
-        return True
+
+def time_left(creation_time):
+    creation_time = struct.unpack("<L", creation_time)[0]
+    time_elapsed = int(time()) - creation_time
+    return max(0, THROTTLE_TIMEOUT - time_elapsed)
+
+
+def contact_by_email(session_id, body, **params):
+    throttle = Throttle()
+
+    for val in throttle.mget(session_id, body['email']):
+        if val is not None:
+            return EmptyResponse("406 Already Created", [])
 
     logger.info("new contact", {
         "gdpr.email": body['email'],
         "gdpr.name": body['name'],
+        "session_id": session_id,
     })
 
-    resp.set_header("202 Accepted", [])
-    resp.set_content_bytes(b"")
-    
-    return True
+    now = current_time()
+    throttle.mset({
+        session_id: now,
+        body['email']: now,
+    })
+
+    return EmptyResponse("202 Accepted", [])
 
 
-def contact_by_phone(req, resp):
-    if req.path() != "/contact/byphone" or req.method() != "POST":
-        return False
+def contact_by_phone(session_id, body, **params):
+    throttle = Throttle()
 
-    try:
-        body = js.loads(req.body())
-        validate(body, ContactByNumberReq)
-    except Exception as exc:
-        resp.bad_request_exc("invalid body", exc)
-        return True
+    for val in throttle.mget(session_id, body['number']):
+        if val is not None:
+            return EmptyResponse("406 Already Created", [])
 
     logger.info("new contact", {
         "gdpr.phone": body['number'],
         "gdpr.name": body['name'],
+        "session_id": session_id,
     })
 
-    resp.set_header("202 Accepted", [])
-    resp.set_content_bytes(b"")
-    
-    return True
+    now = current_time()
+    throttle.mset({
+        session_id: now,
+        body['number']: now,
+    })
+
+    return EmptyResponse("202 Accepted", [])
 
 
-ENDPOINTS = [
-    contact_by_email,
-    contact_by_phone,
-]
+def contact_query(session_id, **params):
+    creation_time = Throttle().get(session_id)
 
-
-def app(environ, start_response):
-    req = Request.from_environ(environ)
-    resp = Response(req)
-
-    for endpoint in ENDPOINTS:
-        if endpoint(req, resp):
-            if not resp.set_header_called():
-                environ['wsgi.errors'].write("response object header not set")
-                resp.set_header("500 No Header", [("X-Error", "response object header not set")])
-                resp.set_content_bytes(b"")
-
-            break
+    if creation_time is None:
+        time_remaining = 0
     else:
-        resp.set_not_found()
+        time_remaining = time_left(creation_time)
 
-    start_response(resp.status, resp.headers)
-    return resp.bytes_iter()
+    return {
+        "timeRemaining": time_remaining,
+    }
+
+
+post_json_endpoint("/contact/byemail", ContactByEmailReq, contact_by_email)
+post_json_endpoint("/contact/byphone", ContactByNumberReq, contact_by_phone)
+get_json_endpoint("/contact", ContactQueryResp, contact_query)

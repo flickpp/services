@@ -1,0 +1,8 @@
+services:
+  redis:
+    image: redis
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis.conf:ro
+    ports:
+      -
+        6379:6379
