@@ -8,12 +8,13 @@ class Request:
         self._environ = environ
         self._body = None
         self._params = None
+        self._qs = self._environ.get("QUERY_STRING", "")
 
         return self
 
     def params(self):
         if self._params is None:
-            self._params = parse_qs(self._environ['QUERY_STRING'])
+            self._params = parse_qs(self._qs)
 
         return self._params
 
@@ -28,6 +29,9 @@ class Request:
             self._body = self._environ['wsgi.input'].read()
 
         return self._body
+
+    def ctx(self):
+        return self._environ['casket.trace_ctx']
 
 
 class Response:
@@ -106,4 +110,4 @@ class ErrorResponse(Exception):
 
 def bad_request(reason, x_error=""):
     return ErrorResponse(f"400 {reason}", x_error)
-    
+

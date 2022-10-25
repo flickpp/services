@@ -3,9 +3,13 @@ import json as js
 
 from casket import logger
 
+from peewee import PeeweeException
+
+from lib.doolally import validate as validate_json, ValidationError
+
 from .endpoints import ENDPOINTS, add_endpoint
 from .reqresp import Request, Response, EmptyResponse, bad_request, ErrorResponse
-from .doolally import validate as validate_json, ValidationError
+
 
 
 __all__ = [
@@ -14,6 +18,7 @@ __all__ = [
     "post_json_endpoint",
     "EmptyResponse",
     "bad_request",
+    "application",
 ]
 
 def app(environ, start_response):
@@ -35,30 +40,49 @@ def app(environ, start_response):
     return resp.bytes_iter()
 
 
-def post_json_endpoint(path, schema, func):
+def post_json_endpoint(path, schema, func, require_session_id=True):
     def endpoint(req, resp):
         if req.path() != path or req.method() != "POST":
             return False
 
-        try:
-            session_id = get_session_id(req.params())
-        except Exception:
-            logger.error("missing/invalid session_id")
-            resp.set_header("400 Invalid Session Id")
-            resp.set_content_bytes(b"")
-            return True
+        args = [req.ctx()]
+
+        if require_session_id:
+            try:
+                args.append(get_session_id(req.params()))
+                del req.params()['session_id']
+            except Exception:
+                logger.error("missing/invalid session_id")
+                resp.set_header("400 Invalid Session Id")
+                resp.set_content_bytes(b"")
+                return True
 
         try:
             body = js.loads(req.body())
             validate_json(body, schema)
-        except Exception:
-            resp.set_header("400 Invalid Body")
+            args.append(body)
+        except Exception as exc:
+            resp.set_header("400 Invalid Body", [("X-Error", str(exc))])
             resp.set_content_bytes(b"")
             return True
 
-        params = req.params()
-        del params['session_id']
-        empty_resp = func(session_id, body, **params)
+        try:
+            empty_resp = func(*args, **req.params())
+
+        except ErrorResponse as exc:
+            headers = []
+            if exc.x_error:
+                headers.append(("X-Error", exc.x_error))
+                resp.set_header(exc.args[0], headers)
+                resp.set_content_bytes(b"")
+                return True
+
+        except PeeweeException as exc:
+            resp.set_header("500 DB I/O Failed", [("X-Error", str(exc))])
+            resp.set_content_bytes(b"")
+            return True
+
+            
         resp.set_header(empty_resp.status, empty_resp.headers)
         resp.set_content_bytes(b"")
 
@@ -67,29 +91,36 @@ def post_json_endpoint(path, schema, func):
     add_endpoint(endpoint)
 
 
-def get_json_endpoint(path, schema, func):
+def get_json_endpoint(path, schema, func, require_session_id=True):
     def endpoint(req, resp):
         if req.path() != path or req.method() != "GET":
             return False
 
-        try:
-            session_id = get_session_id(req.params())
-        except Exception:
-            logger.error("missing/invalid session_id")
-            resp.set_header("400 Invalid Session Id")
-            resp.set_content_bytes(b"")
-            return True
+        args = [req.ctx]
+        if require_session_id:
+            try:
+                args.append(get_session_id(req.params()))
+                del req.params()['session_id']
+            except Exception:
+                logger.error("missing/invalid session_id")
+                resp.set_header("400 Invalid Session Id")
+                resp.set_content_bytes(b"")
+                return True
 
-        params = req.params()
-        del params['session_id']
         try:
-            resp_json = func(session_id, **params)
+            resp_json = func(*args, **req.params())
+
         except ErrorResponse as exc:
             headers = []
             if exc.x_error:
                 headers.append(("X-Error", exc.x_error))
 
             resp.set_header(exc.args[0], headers)
+            resp.set_content_bytes(b"")
+            return True
+
+        except PeeweeException as exc:
+            resp.set_header("500 DB I/O Failed", [("X-Error", str(exc))])
             resp.set_content_bytes(b"")
             return True
 

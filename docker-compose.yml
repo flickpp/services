@@ -1,8 +1,43 @@
 services:
-  redis:
-    image: redis
+  db:
+    image: mariadb:10.9
+    environment:
+      MARIADB_ROOT_PASSWORD: password
+
     volumes:
-      - ./redis.conf:/usr/local/etc/redis.conf:ro
+      - ./dbdata:/var/lib/mysql:rw
+      - ./run:/run
     ports:
-      -
-        6379:6379
+      - 3306:3306
+
+  kvstore:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: kvstore
+
+    ports:
+      - 30000:8080
+    depends_on:
+      - db
+    environment:
+      CASKET_RETURN_STACKTRACE_IN_BODY: 1
+
+  tuliptheclown:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: tuliptheclown
+
+    volumes:
+      - ./secrets:/run/secrets:ro
+    environment:
+      PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT: 120
+      PLANTPOT_TEMPKV_KEY_SALT_PATH: /run/secrets/tuliptheclown_kvsalt
+      CASKET_RETURN_STACKTRACE_IN_BODY: 1
+
+    ports:
+      - 40000:8080
+    depends_on:
+      - db
+      - kvstore

@@ -1289,7 +1289,7 @@ class Schema(ObjectCollection, metaclass=SchemaMeta):
             return f"{name}(" + ", ".join(fields) + ")"
 
         num_required = len(self.doolally_required_fields)
-        num_optional = len(self.fields) - num_required
+        num_optional = len(self.doolally_fields) - num_required
         info = f"num_required={num_required},"
         info += f"num_optional={num_optional}"
         return f"{name}({info})"
