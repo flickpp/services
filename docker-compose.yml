@@ -17,7 +17,7 @@ services:
         SERVICE_NAME: kvstore
 
     ports:
-      - 30000:8080
+      - ${PLANTPOT_KV_STORE_PORT}:8080
     depends_on:
       - db
     environment:

@@ -1,0 +1,10 @@
+% for review in reviews:
+<div class="review ${loop.cycle('review1', 'review2', 'review3')}">
+  <h3>${review['name']} <span class="review-time">${review['creationTime']}</span></h3>
+  <p>${review['review']}</p>
+  % if review['response']:
+  <h3>Tulip</h3>
+  <p>${review['response']}</p>
+  % endif
+</div>
+% endfor

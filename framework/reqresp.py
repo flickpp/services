@@ -1,4 +1,5 @@
 import traceback
+import json as js
 from urllib.parse import parse_qs
 
 class Request:
@@ -100,6 +101,64 @@ class EmptyResponse:
     def __init__(self, status, headers):
         self.status = status
         self.headers = headers
+        self.body_bytes = b""
+
+
+class JSONResponse:
+    def __init__(self, sanity):
+        self._sanity = sanity
+        self._body = None
+
+    def __call__(self, resp):
+        self._sanity(bad_json_response, resp)
+        self._body = js.dumps(resp)
+        return self
+
+    @property
+    def status(self):
+        return "200 OK"
+
+    @property
+    def headers(self):
+        return [("Content-Type", "application/json")]
+
+    @property
+    def body_bytes(self):
+        if self._body is None:
+            raise RuntimeError("body_bytes called on JSONResponse before being set")
+
+        return bytes(self._body, encoding='utf8')
+
+
+class HTMLResponse:
+    def __init__(self, body_bytes):
+        self._body_bytes = body_bytes
+
+    @property
+    def status(self):
+        return "200 Ok"
+
+    @property
+    def headers(self):
+        return [("Content-Type", "text/html; charset=UTF-8")]
+
+    @property
+    def body_bytes(self):
+        return self._body_bytes
+
+
+def html_response(resp):
+    return HTMLResponse(bytes(resp, encoding='utf8'))
+
+
+class InvalidPayload(Exception):
+    pass
+
+
+class ValidationError(Exception):
+    def __init__(self, status, x_error):
+        super().__init__(status)
+        self.x_error = x_error
 
 
 class ErrorResponse(Exception):
@@ -110,4 +169,12 @@ class ErrorResponse(Exception):
 
 def bad_request(reason, x_error=""):
     return ErrorResponse(f"400 {reason}", x_error)
+
+
+def access_denied(x_error):
+    return ErrorResponse("403 Access Denied", x_error)
+
+
+def bad_json_response(reason):
+    return ErrorResponse("500 Bad Response", reason)
 

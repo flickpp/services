@@ -1,3 +1,4 @@
+from datetime import datetime
 
 from lib.doolally import (
     Schema,
@@ -19,7 +20,59 @@ def is_hexstring(value):
 
 def is_hexstring_val(ctx_err, value):
     if not is_hexstring(value):
-        raise ValidationValueError("expected hexstring")
+        raise ctx_err("expected hexstring")
+
+def is_date_val(ctx_err, value):
+    try:
+        datetime.strptime(value, "%d %b %Y")
+    except Exception as exc:
+        raise ctx_err(str(exc))
+
+
+def is_time_val(ctx_err, value):
+    try:
+        datetime.strptime(value, "%H:%M")
+    except Exception as exc:
+        raise ctx_err(str(exc))
+
+
+def is_email_val(ctx_err, value):
+    at_count = 0
+    for v in value.lower():
+        if v == '@':
+            at_count += 1
+            continue
+
+        if v == '.':
+            continue
+
+        if v not in "abcdefghijklmnopqrstuvwxyz-_":
+            raise ctx_err(f"char not valid in email {v}")
+
+    if at_count != 1:
+        raise ctx_err("expected exactly one @")
+
+
+def is_phone_val(ctx_err, value):
+    if not value:
+        raise ctx_err("phone number empty")
+
+    if value[0] == "+":
+        value = value[1:]
+
+    for v in value:
+        v = ord(v)
+
+        if v < ord('0') or v > ord('9'):
+            raise ctx_err("invalid character in phone number")
+
+
+def is_isotimestamp_val(ctx_err, value):
+    try:
+        datetime.fromisoformat(value)
+    except Exception as exc:
+        raise ctx_err(str(exc))
+        
 
 
 def hexstring_of_length(length, required=False, description=""):
@@ -79,20 +132,33 @@ class RetrieveKVValuesResp(Schema):
                              description="retrieved elements from k/v store")
 
 
-class ContactByEmailReq(Schema):
-    jsonschema_description = "contact by email request payload"
-
-    name = String(required=True, description="self identifying name of person", min_length=2)
-    email = String(required=True, description="self described email of person")
-    message = String(required=True, description="message from person", min_length=2, max_length=2048)
-
-
-class ContactByNumberReq(Schema):
+class NewMessageReq(Schema):
     jsonschema_description = "contact by number request payload"
 
-    name = String(required=True, description="self identifying name of person", min_length=2)
-    number = String(required=True, description="self described number of person")
-    message = String(required=True, description="message from person", min_length=2, max_length=2048)
+    name = String(required=True, description="self identifying name of person", min_length=2, max_length=32)
+    phone_or_email = String(required=True, description="self described phone or email of person")
+    message = String(required=True, description="message from person", min_length=2, max_length=4096)
+
+
+class Message(Schema):
+    jsonschema_description = "an individual message stored on the server"
+
+    name = String(required=True, description="self identifying name of person", min_length=2, max_length=32)
+    phone_or_email = String(required=True, description="self described phone or email of person")
+    contact_id = hexstring_of_length(32, required=True, description="contact id of individual")
+    message = String(required=True, description="message from person", min_length=2, max_length=4096)
+    creation_time = String(required=True,
+                           description="timestamp message was created",
+                           validator=is_isotimestamp_val)
+
+
+class MessagesResp(Schema):
+    jsonschema_description = "array of messages received by server"
+
+    messages = StaticTypeArray(
+        required=True,
+        element_field=Message(),
+        description="an individual message")
 
 
 class ContactQueryResp(Schema):
@@ -101,3 +167,92 @@ class ContactQueryResp(Schema):
     time_remaining = Number(required=True,
                             description="time remaining in seconds before another request can be sent",
                             signed=False)
+
+
+def is_contact_type_val(ctx_err, value):
+    if value == "email" or value == "phone":
+        return
+
+    raise ctx_err(f"bad contact_type value {value}")
+
+
+class NewContactReq(Schema):
+    jsonschema_description = "create a new contact in DB"
+
+    name = String(required=True, description="name of person", min_length=4, max_length=64)
+    phoneOrEmail = String(required=True, description="contact string")
+
+
+class NewContactResp(Schema):
+    jsonschema_description = "create a new contact response - contains contact_id"
+
+    contact_id = hexstring_of_length(32, required=True, description="contact_id of created contact")
+
+
+class NewEventReq(Schema):
+    jsonschema_description = "data to create a new event"
+
+    contact_id = hexstring_of_length(32, required=True, description="contact_id to create event for")
+    date = String(required=True, description="date of event", validator=is_date_val)
+    start_time = String(required=True, description="start time of event", validator=is_time_val)
+    end_time = String(required=True, description="end time of event", validator=is_time_val)
+    description=String(required=True, description="description of event", min_length=1, max_length=4096)
+
+
+class NewEventResp(Schema):
+    jsonschema_description = "response of newly created event"
+
+    event_id = String(required=True, description="event_id urlsafe b64 encoded")
+    user_token = String(required=True, description="user token, urlsafe b64 encoded")
+
+
+class Review(Schema):
+    jsonschema_description = "stored review"
+
+    review = String(required=True, description="review")
+    creation_time = String(required=True,
+                           description="creation time of review",
+                           validator=is_isotimestamp_val)
+
+    response = union_with_null(required=True,
+                               element_fields=[String(description="response by tulip")])
+
+    response_time = union_with_null(required=True,
+                                    element_fields=[String(validator=is_isotimestamp_val)])
+
+
+class EventResp(Schema):
+    jsonschema_description = "event response for an individual event"
+
+    date = String(required=True, description="date of event")
+    start_time = String(required=True, description="start time of event", validator=is_time_val)
+    end_time = String(required=True, description="end time of event", validator=is_time_val)
+    description=String(required=True, description="description of event", min_length=1)
+
+    review = union_with_null(required=True,
+                             element_fields=[Review()])
+
+
+class NewReviewReq(Schema):
+    jsonschema_description = "new review"
+
+    review = String(required=True, min_length=1, max_length=4096, description="review to be posted")
+    event_id = String(required=True, min_length=16, description="event to which review is attached")
+
+
+class NewReviewResp(Schema):
+    jsonschema_description = "respond to new review with review id"
+
+    review_id = hexstring_of_length(32, required=True, description="review id")
+
+
+class NewReviewResponseReq(Schema):
+    jsonschema_description = "respond to an exisitng review"
+
+    review_id = hexstring_of_length(32, required=True, description="review id")
+    weight = Number(required=True, is_int=True, min_value=0, max_value=255, description="weight")
+    response = union_with_null(required=True,
+                               element_fields=[
+                                   String(max_length=4096, description="tulip response to comment"),
+                               ]
+               )

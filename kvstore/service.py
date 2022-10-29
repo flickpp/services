@@ -2,26 +2,27 @@ from datetime import datetime, timedelta
 
 from framework import post_json_endpoint, get_json_endpoint, EmptyResponse, bad_request, app
 from schemas import InsertKVValuesReq, RetrieveKVValuesResp, is_hexstring
+from lib.jsonvalidator import JSONValidator
 
 from kvstore.model import Value
 
 
-def insert(_ctx, body, **params):
+def insert(body, **params):
     for v in body['values']:
         expiry_time = datetime.fromtimestamp(v['expiryTime'])
         if expiry_time < datetime.now() + timedelta(seconds=5):
             raise bad_request("Bad Expiry Time", "expiry time is in the past")
 
         xor_key = bytes.fromhex(v['xorKey'])
-        key_id = bytes.fromhex(v['key'])
+        key_hash = bytes.fromhex(v['key'])
 
-        ins = Value.insert(key_id=key_id, xor_key=xor_key, value_str=v['value'], expiry_time=expiry_time)
+        ins = Value.insert(key_hash=key_hash, xor_key=xor_key, value_str=v['value'], expiry_time=expiry_time)
         ins.on_conflict_replace().execute()
 
     return EmptyResponse("202 Created", [])
 
 
-def retrieve(_ctx, **params):
+def retrieve(**params):
     keys = []
 
     for k in params.get("key", []):
@@ -32,13 +33,13 @@ def retrieve(_ctx, **params):
     if not keys:
         raise bad_request("Missing Key", "the url must include at least one key param")
 
-    expr = Value.key_id == keys[0]
+    expr = Value.key_hash == keys[0]
     for k in keys[1:]:
-        expr = expr | (Value.key_id == k)
+        expr = expr | (Value.key_hash == k)
 
     now = datetime.now()
     rows = {
-        row.key_id.hex(): row
+        row.key_hash.hex(): row
         for row in Value.select().where(expr)
         if row.expiry_time > (now + timedelta(seconds=5))
     }
@@ -65,5 +66,5 @@ def retrieve(_ctx, **params):
     return dict(values=values)
 
 
-post_json_endpoint("/insert", InsertKVValuesReq, insert, require_session_id=False)
-get_json_endpoint("/retrieve", RetrieveKVValuesResp, retrieve, require_session_id=False)
+post_json_endpoint("/insert", JSONValidator(InsertKVValuesReq), insert, require_session_id=False)
+get_json_endpoint("/retrieve", JSONValidator(RetrieveKVValuesResp), retrieve, require_session_id=False)
