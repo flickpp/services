@@ -206,32 +206,6 @@ class NewEventResp(Schema):
     user_token = String(required=True, description="user token, urlsafe b64 encoded")
 
 
-class Review(Schema):
-    jsonschema_description = "stored review"
-
-    review = String(required=True, description="review")
-    creation_time = String(required=True,
-                           description="creation time of review",
-                           validator=is_isotimestamp_val)
-
-    response = union_with_null(required=True,
-                               element_fields=[String(description="response by tulip")])
-
-    response_time = union_with_null(required=True,
-                                    element_fields=[String(validator=is_isotimestamp_val)])
-
-
-class EventResp(Schema):
-    jsonschema_description = "event response for an individual event"
-
-    date = String(required=True, description="date of event")
-    start_time = String(required=True, description="start time of event", validator=is_time_val)
-    end_time = String(required=True, description="end time of event", validator=is_time_val)
-    description=String(required=True, description="description of event", min_length=1)
-
-    review = union_with_null(required=True,
-                             element_fields=[Review()])
-
 
 class NewReviewReq(Schema):
     jsonschema_description = "new review"

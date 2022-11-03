@@ -30,7 +30,6 @@ from schemas import (
     NewContactResp,
     NewEventReq,
     NewEventResp,
-    EventResp,
     NewReviewReq,
     NewReviewResp,
     NewReviewResponseReq,
@@ -43,6 +42,7 @@ from lib.jsonvalidator import JSONValidator
 from lib.tokens import parse_login_token
 
 from tuliptheclown.model import Message, Contact, Review, Event
+from tuliptheclown.schemas import EventResp, EventsResp
 
 
 THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
@@ -265,6 +265,27 @@ def get_event(session_id, user_id, **params):
     }
 
 
+def get_all_events(session_id, login_id, **params):
+    if login_id not in LOGIN_IDS:
+        raise access_denied("login id is not in whitelist")
+
+    events = []
+    for ev in Event.select().order_by(Event.date_.desc()).limit(30):
+        event_id = str(urlsafe_b64encode(ev.event_id), encoding='utf8')
+        user_token = build_user_token(ev.contact_id.contact_id)
+
+        events.append({
+            "date": ev.date_.strftime("%a %d %b %Y"),
+            "startTime": ev.start_time.strftime("%H:%M"),
+            "endTime": ev.end_time.strftime("%H:%M"),
+            "description": str(ev.description, encoding='utf8'),
+            "eventId": event_id,
+            "userToken": user_token,
+        })
+
+    return dict(events=events)
+
+
 def new_review(session_id, user_id, body, **params):
     contact_id = bytes.fromhex(user_id)
     event_id = urlsafe_b64decode(body['eventId'])
@@ -417,6 +438,11 @@ get_json_endpoint("/event",
                   JSONValidator(EventResp),
                   get_event,
                   require_user_id=True)
+
+get_json_endpoint("/events",
+                  JSONValidator(EventsResp),
+                  get_all_events,
+                  require_login_id=True)
 
 post_json_endpoint("/review",
                    JSONValidator(NewReviewReq),
