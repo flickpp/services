@@ -151,6 +151,12 @@ def html_response(resp):
     return HTMLResponse(bytes(resp, encoding='utf8'))
 
 
+class Redirect(Exception):
+    def __init__(self, status, location):
+        super().__init__(status)
+        self.location = location
+
+
 class InvalidPayload(Exception):
     pass
 
@@ -177,4 +183,3 @@ def access_denied(x_error):
 
 def bad_json_response(reason):
     return ErrorResponse("500 Bad Response", reason)
-

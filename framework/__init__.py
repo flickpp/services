@@ -16,6 +16,7 @@ from .reqresp import (
     bad_request,
     access_denied,
     ErrorResponse,
+    Redirect,
     JSONResponse,
     ValidationError,
     InvalidPayload,
@@ -28,7 +29,9 @@ __all__ = [
     "add_endpoint",
     "app",
     "post_json_endpoint",
+    "get_endpoint",
     "EmptyResponse",
+    "Redirect",
     "bad_request",
     "access_denied",
     "application",
@@ -89,6 +92,12 @@ class Endpoint:
 
         try:
             self._call(req, resp)
+        except Redirect as exc:
+            headers = [("Location", exc.location)]
+
+            resp.set_header(exc.args[0], headers)
+            resp.set_content_bytes(b"")
+
         except ErrorResponse as exc:
             headers = []
             if exc.x_error:
@@ -191,6 +200,31 @@ def post_json_endpoint(path,
     add_endpoint(endpoint)
 
 
+def get_endpoint(path,
+                 func,
+                 require_session_id=True,
+                 require_user_id=False,
+                 require_login_id=False,
+                 pass_context=False):
+
+    path = path.lower()
+    endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "GET")
+
+    if pass_context:
+        endpoint.pass_context()
+
+    if require_session_id:
+        endpoint.add_url_param_arg("session_id", sanity=session_id_sanity)
+
+    if require_user_id:
+        endpoint.add_url_param_arg("user_id", sanity=user_id_sanity)
+
+    if require_login_id:
+        endpoint.add_url_param_arg("login_id", sanity=login_id_sanity)
+
+    add_endpoint(endpoint)
+
+
 def get_json_endpoint(path,
                       schema_sanity,
                       func,
@@ -199,6 +233,7 @@ def get_json_endpoint(path,
                       require_login_id=False,
                       pass_context=False):
 
+    path = path.lower()
     endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "GET")
 
     if pass_context:
@@ -218,10 +253,17 @@ def get_json_endpoint(path,
     add_endpoint(endpoint)
 
 
-def get_html_endpoint(path, func):
+def get_html_endpoint(path, func, pass_context=False, require_session_id=True):
     path = path.lower()
 
     endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "GET")
+
+    if pass_context:
+        endpoint.pass_context()
+
+    if require_session_id:
+        endpoint.add_url_param_arg("session_id", sanity=session_id_sanity)
+
     endpoint.set_resp_transform(html_response)
 
     add_endpoint(endpoint)

@@ -256,3 +256,10 @@ class NewReviewResponseReq(Schema):
                                    String(max_length=4096, description="tulip response to comment"),
                                ]
                )
+
+
+class LoginData(Schema):
+    jsonschema_description = "login data for current session"
+
+    current_url = String(required=True, min_length=10, description="url when browser started login")
+    login_token = String(required=True, description="login token for client")

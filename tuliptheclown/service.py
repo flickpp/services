@@ -4,6 +4,7 @@ from time import time
 from hashlib import sha256, md5
 from datetime import datetime
 from base64 import urlsafe_b64encode, urlsafe_b64decode
+from urllib.parse import urlparse, urlunparse, ParseResult as URL
 
 from casket import logger
 
@@ -19,6 +20,7 @@ from framework import (
     get_html_endpoint,
     bad_request,
     access_denied,
+    Redirect,
 )
 from schemas import (
     NewMessageReq,
@@ -35,22 +37,24 @@ from schemas import (
     is_email_val,
     is_phone_val,
 )
-from clients import kvstore_insert, kvstore_retrieve
+from clients import kvstore_insert, kvstore_retrieve, oauth_retrieve
 from lib import xor_encrypt
 from lib.jsonvalidator import JSONValidator
+from lib.tokens import parse_login_token
 
 from tuliptheclown.model import Message, Contact, Review, Event
 
 
 THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
 LOGIN_IDS = [
-    "29259b032fec6034a6d920f174080217",
+    "66b15f1c1f8f7b4fa0bcce9c8408cc1c",
 ]
 
 USER_TOKEN_SALT_PATH = os.environ.get("PLANTPOT_USER_TOKEN_SALT_PATH", "/run/secrets/usertokensalt")
 USER_TOKEN_SALT = open(USER_TOKEN_SALT_PATH, 'rb').read()
 
 REVIEWS_TEMPLATE = Template(filename="reviews.html")
+ACCESS_DENIED = Template(filename="access_denied.html")
 
 
 def new_message(ctx, session_id, body, **params):
@@ -335,6 +339,26 @@ def get_reviews(session_id, **params):
     return REVIEWS_TEMPLATE.render(reviews=reviews)
 
 
+def login(ctx, session_id, **params):
+    login = oauth_retrieve(ctx, session_id)
+    if login is None:
+        return ACCESS_DENIED.render(reason="no oauth login found for this session id")
+
+    if parse_login_token(login['loginToken']).login_id not in LOGIN_IDS:
+        return ACCESS_DENIED.render(reason="login not allowed for this user")
+
+    url = urlparse(bytes(login['currentUrl'], encoding='utf8'))
+    tk = bytes(login['loginToken'], encoding='utf8')
+
+    if url.query:
+        query = url.query + b'&login_tk=' + tk
+    else:
+        query = b'login_tk=' + tk
+
+    url = URL(url.scheme, url.netloc, url.path, url.params, query, url.fragment)
+    raise Redirect("303 See Other", str(urlunparse(url), encoding='utf8'))
+
+
 def phone_or_email(phone_or_email):
     is_phone = True
     is_email = True
@@ -406,3 +430,5 @@ post_json_endpoint("/reviewResponse",
                    require_login_id=True)
 
 get_html_endpoint("/reviews", get_reviews)
+
+get_html_endpoint("/login", login, pass_context=True)

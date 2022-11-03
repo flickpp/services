@@ -10,11 +10,21 @@ services:
     ports:
       - 3306:3306
 
+  monstermac:
+    image: flickpp/monstermac:0.1
+    volumes:
+      - ./secrets:/run/secrets:ro
+    environment:
+      MONSTERMAC_MODE: MODE16
+    ports:
+      - 3307:8081
+
   kvstore:
     build:
       context: .
       args:
         SERVICE_NAME: kvstore
+        KVSALT_PATH: secrets/tempkvsalt
 
     ports:
       - ${PLANTPOT_KV_STORE_PORT}:8080
@@ -23,17 +33,34 @@ services:
     environment:
       CASKET_RETURN_STACKTRACE_IN_BODY: 1
 
+  oauth:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: oauth
+        KVSALT_PATH: secrets/oauth_kvsalt
+
+    ports:
+      - ${PLANTPOT_OAUTH_PORT}:8080
+    depends_on:
+      - kvstore
+      - monstermac
+    volumes:
+      - ./secrets:/run/secrets:ro
+    environment:
+      CASKET_RETURN_STACKTRACE_IN_BODY: 1
+
   tuliptheclown:
     build:
       context: .
       args:
         SERVICE_NAME: tuliptheclown
+        KVSALT_PATH: secrets/tuliptheclown_kvsalt
 
     volumes:
       - ./secrets:/run/secrets:ro
     environment:
       PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT: 120
-      PLANTPOT_TEMPKV_KEY_SALT_PATH: /run/secrets/tuliptheclown_kvsalt
       CASKET_RETURN_STACKTRACE_IN_BODY: 1
 
     ports:
@@ -41,3 +68,4 @@ services:
     depends_on:
       - db
       - kvstore
+      - oauth
