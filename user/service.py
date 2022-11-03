@@ -6,11 +6,19 @@ from user.schemas import UserResp
 
 
 def user(session_id, **params):
-    return {
+    session = {
         "sessionId": session_id,
-        "userId": params.get("user_id"),
-        "loginId": params.get("login_id"),
+        "userId": None,
+        "loginId": None,
     }
+
+    if params.get('login_id') and len(params['login_id']) == 1:
+        session['loginId'] = params['login_id'][0]
+
+    if params.get('user_id') and len(params['user_id']) == 1:
+        session['userId'] = params['user_id'][0]
+
+    return session
 
 
 get_json_endpoint("/session", JSONValidator(UserResp), user)
