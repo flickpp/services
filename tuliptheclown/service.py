@@ -42,7 +42,7 @@ from lib.jsonvalidator import JSONValidator
 from lib.tokens import parse_login_token
 
 from tuliptheclown.model import Message, Contact, Review, Event
-from tuliptheclown.schemas import EventResp, EventsResp
+from tuliptheclown.schemas import EventResp, EventsResp, ReviewsResp
 
 
 THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
@@ -313,6 +313,41 @@ def new_review(session_id, user_id, body, **params):
     }
 
 
+def get_all_reviews(session_id, login_id, **params):
+    if login_id not in LOGIN_IDS:
+        raise access_denied("login id not in allowed whitelist")
+
+    args = (
+        Review.review_id,
+        Review.xor_key,
+        Review.review,
+        Review.weight,
+    )
+
+    reviews = {}
+    for r in Review.select(*args):
+        review = str(xor_encrypt(r.xor_key, r.review), encoding='utf8')
+
+        reviews[r.review_id] = {
+            "weight": r.weight,
+            "reviewId": r.review_id.hex(),
+            "review": review,
+            "eventId": None,
+            "userToken": None,
+        }
+
+    review_ids = list(reviews.keys())
+    args = (Event.event_id, Event.contact_id, Event.review_id)
+    for ev in Event.select(*args).where(Event.review_id.in_(review_ids)):
+        event_id = str(urlsafe_b64encode(ev.review_id.review_id), encoding='utf8')
+        user_token = build_user_token(ev.contact_id.contact_id)
+
+        reviews[ev.review_id.review_id]['eventId'] = event_id
+        reviews[ev.review_id.review_id]['userToken'] = user_token
+
+    return dict(reviews=list(reviews.values()))
+
+
 def review_response(session_id, login_id, body, **params):
     if login_id not in LOGIN_IDS:
         raise access_denied("login id not in allowed whitelist")
@@ -449,6 +484,11 @@ post_json_endpoint("/review",
                    new_review,
                    require_user_id=True,
                    resp_schema_sanity=JSONValidator(NewReviewResp))
+
+get_json_endpoint("/review",
+                  JSONValidator(ReviewsResp),
+                  get_all_reviews,
+                  require_login_id=True)
 
 post_json_endpoint("/reviewResponse",
                    JSONValidator(NewReviewResponseReq),
