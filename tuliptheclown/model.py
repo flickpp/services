@@ -13,6 +13,7 @@ from peewee import (
     ForeignKeyField,
     SmallIntegerField,
     IntegerField,
+    FloatField,
 )
 
 DB_HOST = os.environ.get("PLANTPOT_DB_HOST", "db:3306").split(':')
@@ -116,6 +117,8 @@ class Event(Model):
     start_time = TimeField(null=False)
     end_time = TimeField(null=False)
     description = varbinary_field("Description", 8192)(null=False)
+    total_price = FloatField(null=False)
+    deposit = FloatField(null=False)
 
     class Meta:
         database = DB

@@ -22,6 +22,13 @@ def is_hexstring_val(ctx_err, value):
     if not is_hexstring(value):
         raise ctx_err("expected hexstring")
 
+
+def javascript_date_val(ctx_err, value):
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except Exception as exc:
+        raise ctx_err(str(exc))
+
 def is_date_val(ctx_err, value):
     try:
         datetime.strptime(value, "%d %b %Y")
@@ -187,24 +194,6 @@ class NewContactResp(Schema):
     jsonschema_description = "create a new contact response - contains contact_id"
 
     contact_id = hexstring_of_length(32, required=True, description="contact_id of created contact")
-
-
-class NewEventReq(Schema):
-    jsonschema_description = "data to create a new event"
-
-    contact_id = hexstring_of_length(32, required=True, description="contact_id to create event for")
-    date = String(required=True, description="date of event", validator=is_date_val)
-    start_time = String(required=True, description="start time of event", validator=is_time_val)
-    end_time = String(required=True, description="end time of event", validator=is_time_val)
-    description=String(required=True, description="description of event", min_length=1, max_length=4096)
-
-
-class NewEventResp(Schema):
-    jsonschema_description = "response of newly created event"
-
-    event_id = String(required=True, description="event_id urlsafe b64 encoded")
-    user_token = String(required=True, description="user token, urlsafe b64 encoded")
-
 
 
 class NewReviewReq(Schema):

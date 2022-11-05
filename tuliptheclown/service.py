@@ -28,8 +28,6 @@ from schemas import (
     ContactQueryResp,
     NewContactReq,
     NewContactResp,
-    NewEventReq,
-    NewEventResp,
     NewReviewReq,
     NewReviewResp,
     NewReviewResponseReq,
@@ -42,7 +40,7 @@ from lib.jsonvalidator import JSONValidator
 from lib.tokens import parse_login_token
 
 from tuliptheclown.model import Message, Contact, Review, Event
-from tuliptheclown.schemas import EventResp, EventsResp, ReviewsResp
+from tuliptheclown.schemas import EventResp, EventsResp, ReviewsResp, NewEventReq, NewEventResp
 
 
 THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
@@ -184,27 +182,29 @@ def new_contact(session_id, login_id, body, **params):
 
 
 def new_event(session_id, login_id, body, **params):
-    if login_id not in LOGIN_IDS:
-        raise access_denied("login id is not in whitelist")
+    contact_id = new_contact(session_id, login_id, body, **params)['contactId']
 
     event_id = os.urandom(16)
-    contact_id = bytes.fromhex(body['contactId'])
-    date = datetime.strptime(body['date'], "%d %b %Y")
+    contact_id = bytes.fromhex(contact_id)
+    date = datetime.strptime(body['date'], "%Y-%m-%d")
     start_time = datetime.strptime(body['startTime'], "%H:%M")
     end_time = datetime.strptime(body['endTime'], "%H:%M")
+
     if start_time >= end_time:
         raise bad_request("Invalid Time", "end time is before start time")
 
-    try:
-        Event.create(event_id=event_id,
-                     contact_id=contact_id,
-                     date_=date,
-                     start_time=start_time,
-                     end_time=end_time,
-                     description=bytes(body['description'], encoding='utf8'))
+    if body['deposit'] > body['totalPrice']:
+        raise bad_request("Invalid Deposit", "depsoit is greater than total price")
 
-    except IntegrityError:
-        raise bad_request("Invalid User Id", "user id does not exist in database")
+    Event.create(event_id=event_id,
+                 contact_id=contact_id,
+                 date_=date,
+                 start_time=start_time,
+                 end_time=end_time,
+                 description=bytes(body['description'], encoding='utf8'),
+                 total_price=body['totalPrice'],
+                 deposit=body['deposit'])
+
 
     return {
         "eventId": str(urlsafe_b64encode(event_id), encoding='utf8'),
@@ -261,6 +261,8 @@ def get_event(session_id, user_id, **params):
         "startTime": ev.start_time.strftime("%H:%M"),
         "endTime": ev.end_time.strftime("%H:%M"),
         "description": str(ev.description, encoding='utf8'),
+        "totalPrice": ev.total_price,
+        "deposit": ev.deposit,
         "review": review,
     }
 
