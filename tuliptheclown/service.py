@@ -23,7 +23,6 @@ from framework import (
     Redirect,
 )
 from schemas import (
-    NewMessageReq,
     MessagesResp,
     ContactQueryResp,
     NewContactReq,
@@ -40,7 +39,14 @@ from lib.jsonvalidator import JSONValidator
 from lib.tokens import parse_login_token
 
 from tuliptheclown.model import Message, Contact, Review, Event
-from tuliptheclown.schemas import EventResp, EventsResp, ReviewsResp, NewEventReq, NewEventResp
+from tuliptheclown.schemas import (
+    EventResp,
+    EventsResp,
+    ReviewsResp,
+    NewEventReq,
+    NewEventResp,
+    NewMessageReq,
+)
 
 
 THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
@@ -105,7 +111,7 @@ def new_message(ctx, session_id, body, **params):
     return EmptyResponse("202 Accepted", [])
 
 
-def get_messages(session_id, login_id, **params):
+def get_all_messages(session_id, login_id, **params):
     if login_id not in LOGIN_IDS:
         raise access_denied("login id not in whitelist")
 
@@ -449,9 +455,9 @@ post_json_endpoint("/message",
                    new_message,
                    pass_context=True)
 
-get_json_endpoint("/message",
+get_json_endpoint("/messages",
                   JSONValidator(MessagesResp),
-                  get_messages,
+                  get_all_messages,
                   require_login_id=True)
 
 get_json_endpoint("/contact",
