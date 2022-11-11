@@ -33,7 +33,12 @@ from schemas import (
     is_email_val,
     is_phone_val,
 )
-from clients import kvstore_insert, kvstore_retrieve, oauth_retrieve
+from clients import (
+    kvstore_insert,
+    kvstore_retrieve,
+    oauth_retrieve,
+    ws_send_login_ids,
+)
 from lib import xor_encrypt
 from lib.jsonvalidator import JSONValidator
 from lib.tokens import parse_login_token
@@ -48,13 +53,14 @@ from tuliptheclown.schemas import (
     NewMessageReq,
 )
 
-
-THROTTLE_TIMEOUT = int(os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
+THROTTLE_TIMEOUT = int(
+    os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
 LOGIN_IDS = [
     "66b15f1c1f8f7b4fa0bcce9c8408cc1c",
 ]
 
-USER_TOKEN_SALT_PATH = os.environ.get("PLANTPOT_USER_TOKEN_SALT_PATH", "/run/secrets/usertokensalt")
+USER_TOKEN_SALT_PATH = os.environ.get("PLANTPOT_USER_TOKEN_SALT_PATH",
+                                      "/run/secrets/usertokensalt")
 USER_TOKEN_SALT = open(USER_TOKEN_SALT_PATH, 'rb').read()
 
 REVIEWS_TEMPLATE = Template(filename="reviews.html")
@@ -69,17 +75,19 @@ def new_message(ctx, session_id, body, **params):
     elif is_email:
         contact_type = "email"
     else:
-        raise bad_request("Invalid Contact", "contact is neither valid phone nor email")
+        raise bad_request("Invalid Contact",
+                          "contact is neither valid phone nor email")
 
     for val in kvstore_retrieve(ctx, session_id, body['phoneOrEmail']):
         if val.value is not None:
             return EmptyResponse("406 Already Created", [])
 
-    logger.info("new contact", {
-        f"gdpr.{contact_type}": body['phoneOrEmail'],
-        "gdpr.name": body['name'],
-        "session_id": session_id,
-    })
+    logger.info(
+        "new contact", {
+            f"gdpr.{contact_type}": body['phoneOrEmail'],
+            "gdpr.name": body['name'],
+            "session_id": session_id,
+        })
 
     contact_id = compute_contact_id(body['name'], body['phoneOrEmail'])
     name = bytes(body['name'], encoding='utf8')
@@ -100,11 +108,22 @@ def new_message(ctx, session_id, body, **params):
     message = xor_encrypt(xor_key, message)
     Message.create(contact_id=contact_id, message=message, xor_key=xor_key)
 
-    if kvstore_insert(ctx, {session_id: b"1", body['phoneOrEmail']: b"2"}, THROTTLE_TIMEOUT) != 2:
-        logger.warn(f"couldn't insert session_id and {contact_type} into k/v store - there is no throttle", {
-            "session_id" : session_id,
-            f"gdpr.{contact_type}": body['phoneOrEmail'],
-        })
+    if kvstore_insert(ctx, {
+            session_id: b"1",
+            body['phoneOrEmail']: b"2"
+    }, THROTTLE_TIMEOUT) != 2:
+        logger.warn(
+            f"couldn't insert session_id and {contact_type} into k/v store - there is no throttle",
+            {
+                "session_id": session_id,
+                f"gdpr.{contact_type}": body['phoneOrEmail'],
+            })
+
+    # Notify any active logged in users
+    ws_send_login_ids(LOGIN_IDS,
+                      "newMessage",
+                      body,
+                      schema=NewMessageReq)
 
     # TODO: Send email
 
@@ -115,19 +134,17 @@ def get_all_messages(session_id, login_id, **params):
     if login_id not in LOGIN_IDS:
         raise access_denied("login id not in whitelist")
 
-    fields = (Message.message,
-              Message.xor_key,
-              Message.creation_time,
-              Contact.name_,
-              Contact.xor_key,
-              Contact.phone_or_email,
+    fields = (Message.message, Message.xor_key, Message.creation_time,
+              Contact.name_, Contact.xor_key, Contact.phone_or_email,
               Contact.contact_id)
 
     # Get the most recent 50 messages
     messages = []
-    query = Contact.select(*fields).join(Message).order_by(Message.creation_time.desc())
+    query = Contact.select(*fields).join(Message).order_by(
+        Message.creation_time.desc())
     for m in query.limit(50):
-        message = str(xor_encrypt(m.message.xor_key, m.message.message), encoding='utf8')
+        message = str(xor_encrypt(m.message.xor_key, m.message.message),
+                      encoding='utf8')
         name = str(xor_encrypt(m.xor_key, m.name_), encoding='utf8')
 
         messages.append({
@@ -165,7 +182,8 @@ def new_contact(session_id, login_id, body, **params):
     elif is_email:
         contact_type = "email"
     else:
-        raise bad_request("Invalid Contact", "contact is neither phone nor email address")
+        raise bad_request("Invalid Contact",
+                          "contact is neither phone nor email address")
 
     contact_id = compute_contact_id(body['name'], body['phoneOrEmail'])
 
@@ -200,7 +218,8 @@ def new_event(session_id, login_id, body, **params):
         raise bad_request("Invalid Time", "end time is before start time")
 
     if body['deposit'] > body['totalPrice']:
-        raise bad_request("Invalid Deposit", "depsoit is greater than total price")
+        raise bad_request("Invalid Deposit",
+                          "depsoit is greater than total price")
 
     Event.create(event_id=event_id,
                  contact_id=contact_id,
@@ -210,7 +229,6 @@ def new_event(session_id, login_id, body, **params):
                  description=bytes(body['description'], encoding='utf8'),
                  total_price=body['totalPrice'],
                  deposit=body['deposit'])
-
 
     return {
         "eventId": str(urlsafe_b64encode(event_id), encoding='utf8'),
@@ -235,7 +253,8 @@ def get_event(session_id, user_id, **params):
     filter = (Event.contact_id == contact_id) & (Event.event_id == event_id)
     ev = list(Event.select().where(filter))
     if not ev:
-        raise access_denied("event id does not exist or does not belong to this user")
+        raise access_denied(
+            "event id does not exist or does not belong to this user")
     ev = ev[0]
 
     review = None
@@ -243,9 +262,10 @@ def get_event(session_id, user_id, **params):
     if ev.review_id:
         rev = list(Review.select().where(Review.review_id == ev.review_id))
         if not rev or len(rev) != 1:
-            logger.error("review is registered to event but we can't find it", {
-                "review_id": ev.review_id.hex(),
-            })
+            logger.error("review is registered to event but we can't find it",
+                         {
+                             "review_id": ev.review_id.hex(),
+                         })
         else:
             rev = rev[0]
             text = str(xor_encrypt(rev.xor_key, rev.review), encoding='utf8')
@@ -301,9 +321,12 @@ def new_review(session_id, user_id, body, **params):
     review_id = sha256(review).digest()[:16]
 
     # Does the event id exist and belong to this user?
-    query = list(Event.select(Event.event_id, Event.contact_id).where(Event.contact_id == contact_id))
+    query = list(
+        Event.select(Event.event_id,
+                     Event.contact_id).where(Event.contact_id == contact_id))
     if not query or query[0].event_id != event_id:
-        raise access_denied("event Id does not exist or does not belong to this user")
+        raise access_denied(
+            "event Id does not exist or does not belong to this user")
 
     xor_key = os.urandom(16)
     review = xor_encrypt(xor_key, review)
@@ -314,7 +337,9 @@ def new_review(session_id, user_id, body, **params):
                         xor_key=xor_key)
     ins.on_conflict_ignore().execute()
 
-    Event.update({Event.review_id: review_id}).where(Event.event_id == event_id).execute()
+    Event.update({
+        Event.review_id: review_id
+    }).where(Event.event_id == event_id).execute()
 
     return {
         "reviewId": review_id.hex(),
@@ -347,7 +372,8 @@ def get_all_reviews(session_id, login_id, **params):
     review_ids = list(reviews.keys())
     args = (Event.event_id, Event.contact_id, Event.review_id)
     for ev in Event.select(*args).where(Event.review_id.in_(review_ids)):
-        event_id = str(urlsafe_b64encode(ev.review_id.review_id), encoding='utf8')
+        event_id = str(urlsafe_b64encode(ev.review_id.review_id),
+                       encoding='utf8')
         user_token = build_user_token(ev.contact_id.contact_id)
 
         reviews[ev.review_id.review_id]['eventId'] = event_id
@@ -387,14 +413,19 @@ def get_reviews(session_id, **params):
     reviews = []
     filter = Review.weight != 0
     order = Review.weight.desc()
-    for c in Contact.select(*args).join(Review).where(filter).order_by(order).limit(50):
+    for c in Contact.select(
+            *args).join(Review).where(filter).order_by(order).limit(50):
         r = c.review
 
         reviews.append({
-            "review": str(xor_encrypt(r.xor_key, r.review), encoding='utf8'),
-            "creationTime": r.creation_time.strftime("%b %Y"),
-            "response": None,
-            "name": str(xor_encrypt(c.xor_key, c.name_), encoding='utf8'),
+            "review":
+            str(xor_encrypt(r.xor_key, r.review), encoding='utf8'),
+            "creationTime":
+            r.creation_time.strftime("%b %Y"),
+            "response":
+            None,
+            "name":
+            str(xor_encrypt(c.xor_key, c.name_), encoding='utf8'),
         })
 
         if r.response:
@@ -406,7 +437,8 @@ def get_reviews(session_id, **params):
 def login(ctx, session_id, **params):
     login = oauth_retrieve(ctx, session_id)
     if login is None:
-        return ACCESS_DENIED.render(reason="no oauth login found for this session id")
+        return ACCESS_DENIED.render(
+            reason="no oauth login found for this session id")
 
     if parse_login_token(login['loginToken']).login_id not in LOGIN_IDS:
         return ACCESS_DENIED.render(reason="login not allowed for this user")
@@ -419,7 +451,8 @@ def login(ctx, session_id, **params):
     else:
         query = b'login_tk=' + tk
 
-    url = URL(url.scheme, url.netloc, url.path, url.params, query, url.fragment)
+    url = URL(url.scheme, url.netloc, url.path, url.params, query,
+              url.fragment)
     raise Redirect("303 See Other", str(urlunparse(url), encoding='utf8'))
 
 

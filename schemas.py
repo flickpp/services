@@ -226,3 +226,24 @@ class LoginData(Schema):
 
     current_url = String(required=True, min_length=10, description="url when browser started login")
     login_token = String(required=True, description="login token for client")
+
+
+class WebsocketReq(Schema):
+    jsonschema_description = "send a message to websockets"
+
+    session_ids = StaticTypeArray(
+        required=True,
+        element_field=hexstring_of_length(32),
+    )
+
+    user_ids = StaticTypeArray(
+        required=True,
+        element_field=hexstring_of_length(32),
+    )
+
+    login_ids = StaticTypeArray(
+        required=True,
+        element_field=hexstring_of_length(32),
+    )
+
+    message = String(required=True, min_length=1)

@@ -19,6 +19,17 @@ services:
     ports:
       - 3307:8081
 
+  rabbitmq:
+    image: rabbitmq:3.11
+    ports:
+      - 15672:15672
+
+  websocket:
+    image: flickpp/websocket:0.1
+    ports:
+      - ${PLANTPOT_WEBSOCKET_WEBSOCKET_PORT}:8080
+      - ${PLANTPOT_WEBSOCKET_MSG_PORT}:8081
+
   kvstore:
     build:
       context: .
@@ -69,3 +80,4 @@ services:
       - db
       - kvstore
       - oauth
+      - websocket
