@@ -1,0 +1,9 @@
+Hello Tulip,
+
+You have a new message from {name}.
+
+Contact: {phoneOrEmail}
+
+Message:
+
+{message}

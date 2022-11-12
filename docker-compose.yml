@@ -22,7 +22,7 @@ services:
   rabbitmq:
     image: rabbitmq:3.11
     ports:
-      - 15672:15672
+      - ${PLANTPOT_RABBITMQ_PORT}:5672
 
   websocket:
     image: flickpp/websocket:0.1

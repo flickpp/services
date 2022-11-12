@@ -38,6 +38,7 @@ from clients import (
     kvstore_retrieve,
     oauth_retrieve,
     ws_send_login_ids,
+    rabbitmq_send_email,
 )
 from lib import xor_encrypt
 from lib.jsonvalidator import JSONValidator
@@ -55,6 +56,10 @@ from tuliptheclown.schemas import (
 
 THROTTLE_TIMEOUT = int(
     os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
+
+EMAIL_FILE = os.environ.get("PLANTPOT_TULIPTHECLOWN_EMAIL_FILE", "/run/secrets/tulipemail")
+TULIP_EMAIL = open(EMAIL_FILE).read()
+
 LOGIN_IDS = [
     "66b15f1c1f8f7b4fa0bcce9c8408cc1c",
 ]
@@ -65,6 +70,7 @@ USER_TOKEN_SALT = open(USER_TOKEN_SALT_PATH, 'rb').read()
 
 REVIEWS_TEMPLATE = Template(filename="reviews.html")
 ACCESS_DENIED = Template(filename="access_denied.html")
+MESSAGE_EMAIL_TEMPLATE = open("message-email").read()
 
 
 def new_message(ctx, session_id, body, **params):
@@ -120,12 +126,10 @@ def new_message(ctx, session_id, body, **params):
             })
 
     # Notify any active logged in users
-    ws_send_login_ids(LOGIN_IDS,
-                      "newMessage",
-                      body,
-                      schema=NewMessageReq)
+    ws_send_login_ids(LOGIN_IDS, "newMessage", body, schema=NewMessageReq)
 
-    # TODO: Send email
+    # Write the email to rabbit
+    rabbitmq_send_email(TULIP_EMAIL, build_message_email(body))
 
     return EmptyResponse("202 Accepted", [])
 
@@ -454,6 +458,10 @@ def login(ctx, session_id, **params):
     url = URL(url.scheme, url.netloc, url.path, url.params, query,
               url.fragment)
     raise Redirect("303 See Other", str(urlunparse(url), encoding='utf8'))
+
+
+def build_message_email(body):
+    return MESSAGE_EMAIL_TEMPLATE.format(**body)
 
 
 def phone_or_email(phone_or_email):
