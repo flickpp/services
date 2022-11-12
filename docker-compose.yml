@@ -17,7 +17,7 @@ services:
     environment:
       MONSTERMAC_MODE: MODE16
     ports:
-      - 3307:8081
+      - ${PLANTPOT_MONSTER_MAC_PORT}:8081
 
   rabbitmq:
     image: rabbitmq:3.11
@@ -50,6 +50,27 @@ services:
       args:
         SERVICE_NAME: oauth
         KVSALT_PATH: secrets/oauth_kvsalt
+
+    ports:
+      - ${PLANTPOT_OAUTH_PORT}:8080
+    depends_on:
+      - kvstore
+      - monstermac
+    volumes:
+      - ./secrets:/run/secrets:ro
+    environment:
+      CASKET_RETURN_STACKTRACE_IN_BODY: 1
+
+  images:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: images
+        KVSALT_PATH: secrets/tempkvsalt
+      volumes:
+        - ./blobs:/blobs:rw
+      environment:
+        CASKET_RETURN_STACKTRACE_IN_BODY: 1
 
     ports:
       - ${PLANTPOT_OAUTH_PORT}:8080

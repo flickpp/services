@@ -3,8 +3,10 @@ from hashlib import sha256
 
 import requests
 
+from lib.tokens import build_blob_token
 
-MONSTERMAC_HOST = environ.get("PLANTPOT_MONSTERMAC_HOST", "monstermac:8081")
+
+MONSTERMAC_HOST = environ.get("PLANTPOT_MONSTERMAC_ADDR", "monstermac:8081")
 MONSTERMAC_URL = f"http://{MONSTERMAC_HOST}"
 
 
@@ -29,8 +31,17 @@ def monstermac(value):
     if not isinstance(value, (bytes, bytearray)):
         raise TypeError("value must be bytes or str")
 
-    resp = requests.post(MONSTERMAC_URL)
+    resp = requests.post(MONSTERMAC_URL, data=value)
     if resp.status_code != 200:
         raise Exception("expected 200 response code")
 
     return resp.content
+
+
+def login_key(login_id):
+    login_id = bytes.fromhex(login_id)
+    assert len(login_id) == 16, "login id should be 16 bytes"
+
+    return monstermac(login_id)[:16]
+
+

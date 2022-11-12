@@ -15,6 +15,7 @@ from .reqresp import (
     EmptyResponse,
     bad_request,
     access_denied,
+    internal_sever_error,
     ErrorResponse,
     Redirect,
     JSONResponse,
@@ -22,8 +23,6 @@ from .reqresp import (
     InvalidPayload,
     html_response,
 )
-
-
 
 __all__ = [
     "add_endpoint",
@@ -38,6 +37,7 @@ __all__ = [
     "ValidationError",
 ]
 
+
 def app(environ, start_response):
     req = Request.from_environ(environ)
     resp = Response(req)
@@ -46,7 +46,9 @@ def app(environ, start_response):
         if endpoint(req, resp):
             if not resp.set_header_called():
                 environ['wsgi.errors'].write("response object header not set")
-                resp.set_header("500 No Header", [("X-Error", "response object header not set")])
+                resp.set_header(
+                    "500 No Header",
+                    [("X-Error", "response object header not set")])
                 resp.set_content_bytes(b"")
 
             break
@@ -60,31 +62,14 @@ def app(environ, start_response):
 UrlParamArg = namedtuple("UrlParamArg", ("key", "required", "sanity"))
 
 
-class Endpoint:
+class BaseEndpoint:
+
     def __init__(self, clb, matcher=None):
         self._clb = clb
         if matcher is None:
             self._matcher = lambda req: True
         else:
             self._matcher = matcher
-
-        self._pass_context = False
-        self._url_param_args = []
-        self._req_body_transform = None
-        self._path_args = None
-        self._resp_transform = None
-
-    def pass_context(self):
-        self._pass_context = True
-
-    def add_url_param_arg(self, key, required=True, sanity=None):
-        self._url_param_args.append(UrlParamArg(key, required, sanity))
-
-    def set_req_body_transform(self, transform):
-        self._req_body_transform = transform
-
-    def set_resp_transform(self, transform):
-        self._resp_transform = transform
 
     def __call__(self, req, resp):
         if not self._matcher(req):
@@ -109,6 +94,37 @@ class Endpoint:
         return True
 
     def _call(self, req, resp):
+        self._clb(req, resp)
+
+
+class Endpoint(BaseEndpoint):
+    def __init__(self, clb, matcher=None):
+        super().__init__(clb, matcher)
+        self._pass_context = False
+        self._url_param_args = []
+        self._req_body_transform = None
+        self._path_args = None
+        self._resp_transform = None
+
+    def pass_context(self):
+        self._pass_context = True
+
+    def add_url_param_arg(self, key, required=True, sanity=None):
+        self._url_param_args.append(UrlParamArg(key, required, sanity))
+
+    def set_req_body_transform(self, transform):
+        self._req_body_transform = transform
+
+    def set_resp_transform(self, transform):
+        self._resp_transform = transform
+
+    def set_path_args(self, transform=None):
+        if transform is None:
+            transform = lambda path: path.split('/')
+
+        self._path_args = transform
+
+    def _call(self, req, resp):
         args = []
 
         if self._pass_context:
@@ -116,21 +132,23 @@ class Endpoint:
 
         # Do we have any path args?
         if self._path_args:
-            args.extend(self._path_args(req.path()))
+            args.extend(self._path_args(req.path(lowercase=False)))
 
         # Do we have any url params?
         params = req.params()
         for url_arg in self._url_param_args:
             arg_ll = params.get(url_arg.key)
-            
+
             if arg_ll is None and url_arg.required:
-                raise bad_request("Missing Url Param", f"required url param {url_arg.key}")
+                raise bad_request("Missing Url Param",
+                                  f"required url param {url_arg.key}")
 
             if arg_ll is None:
                 continue
 
             if len(arg_ll) != 1:
-                raise bad_request("Duplicate Url Param", f"url param {url_arg.key} duplicated")
+                raise bad_request("Duplicate Url Param",
+                                  f"url param {url_arg.key} duplicated")
 
             if url_arg.sanity:
                 err = lambda reason: bad_request("Invalid Url Param", reason)
@@ -144,7 +162,8 @@ class Endpoint:
             try:
                 args.append(self._req_body_transform(req.body()))
             except InvalidPayload as exc:
-                raise bad_request("Invalid Payload", f"invalid payload [{exc}]")
+                raise bad_request("Invalid Payload",
+                                  f"invalid payload [{exc}]")
 
         clb_resp = self._clb(*args, **params)
         if self._resp_transform:
@@ -155,6 +174,7 @@ class Endpoint:
 
 
 class JSONSanity:
+
     def __init__(self, sanity):
         self._sanity = sanity
 
@@ -178,7 +198,8 @@ def post_json_endpoint(path,
                        pass_context=False):
 
     path = path.lower()
-    endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "POST")
+    endpoint = Endpoint(
+        func, lambda req: req.path() == path and req.method() == "POST")
 
     if pass_context:
         endpoint.pass_context()
@@ -208,7 +229,8 @@ def get_endpoint(path,
                  pass_context=False):
 
     path = path.lower()
-    endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "GET")
+    endpoint = Endpoint(
+        func, lambda req: req.path() == path and req.method() == "GET")
 
     if pass_context:
         endpoint.pass_context()
@@ -234,7 +256,8 @@ def get_json_endpoint(path,
                       pass_context=False):
 
     path = path.lower()
-    endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "GET")
+    endpoint = Endpoint(
+        func, lambda req: req.path() == path and req.method() == "GET")
 
     if pass_context:
         endpoint.pass_context()
@@ -256,7 +279,8 @@ def get_json_endpoint(path,
 def get_html_endpoint(path, func, pass_context=False, require_session_id=True):
     path = path.lower()
 
-    endpoint = Endpoint(func, lambda req: req.path() == path and req.method() == "GET")
+    endpoint = Endpoint(
+        func, lambda req: req.path() == path and req.method() == "GET")
 
     if pass_context:
         endpoint.pass_context()
@@ -272,6 +296,7 @@ def get_html_endpoint(path, func, pass_context=False, require_session_id=True):
 def session_id_sanity(err, val):
     if len(val) != 32 or not is_hexstring(val):
         raise err("session id must be a hexstring of length 32 chars")
+
 
 def user_id_sanity(err, val):
     if len(val) != 32 or not is_hexstring(val):

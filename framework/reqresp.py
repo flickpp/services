@@ -19,11 +19,17 @@ class Request:
 
         return self._params
 
-    def path(self):
-        return self._environ['PATH_INFO'].lower()
+    def path(self, lowercase=True):
+        if lowercase:
+            return self._environ['PATH_INFO'].lower()
+        else:
+            return self._environ['PATH_INFO']
 
     def method(self):
         return self._environ['REQUEST_METHOD']
+
+    def content_type(self):
+        return self._environ.get("CONTENT_TYPE")
 
     def body(self):
         if self._body is None:
@@ -179,6 +185,10 @@ def bad_request(reason, x_error=""):
 
 def access_denied(x_error):
     return ErrorResponse("403 Access Denied", x_error)
+
+
+def internal_sever_error(reason, x_error):
+    return ErrorResponse(f"500 {reason}", x_error)
 
 
 def bad_json_response(reason):

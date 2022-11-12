@@ -4,7 +4,7 @@ from .kvstore import (
     retrieve as kvstore_retrieve,
 )
 
-from .monstermac import sha256_monstermac
+from .monstermac import sha256_monstermac, login_key
 
 from .oauth import retrieve as oauth_retrieve
 
