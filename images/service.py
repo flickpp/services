@@ -96,10 +96,8 @@ def retrieve(blob_tk, key):
         raise internal_sever_error("Missing Blob",
                                    "couldn't find blob for issued token")
 
-    headers = [
-        ("Content-Type", content_type),
-        ("Cache-Control", "private, immutable")
-    ]
+    headers = [("Content-Type", content_type),
+               ("Cache-Control", "private, immutable")]
     return RetrieveResponse("200 Ok", headers, blob)
 
 
@@ -120,6 +118,7 @@ def user_retrieve(blob_tk, user_id, **params):
 
 
 def read_blob_token_from_path(prefix):
+
     def inner(path):
         path = path[len(prefix + '/'):]
 
