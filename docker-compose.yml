@@ -24,6 +24,16 @@ services:
     ports:
       - ${PLANTPOT_RABBITMQ_PORT}:5672
 
+  rabbit-tail:
+    build:
+      context: .
+      dockerfile: Dockerfile-rabbit
+    volumes:
+      - ./secrets:/run/secrets:ro
+    depends_on:
+      - rabbitmq
+      - websocket
+
   websocket:
     image: flickpp/websocket:0.1
     ports:
@@ -35,12 +45,20 @@ services:
       context: .
       args:
         SERVICE_NAME: kvstore
-        KVSALT_PATH: secrets/tempkvsalt
-
     ports:
-      - ${PLANTPOT_KV_STORE_PORT}:8080
+      - ${PLANTPOT_KVSTORE_PORT}:8080
     depends_on:
       - db
+    environment:
+      CASKET_RETURN_STACKTRACE_IN_BODY: 1
+
+  user:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: user
+    ports:
+      - ${PLANTPOT_USER_PORT}:8080
     environment:
       CASKET_RETURN_STACKTRACE_IN_BODY: 1
 
@@ -49,45 +67,35 @@ services:
       context: .
       args:
         SERVICE_NAME: oauth
-        KVSALT_PATH: secrets/oauth_kvsalt
-
     ports:
       - ${PLANTPOT_OAUTH_PORT}:8080
     depends_on:
-      - kvstore
       - monstermac
+      - kvstore
     volumes:
       - ./secrets:/run/secrets:ro
     environment:
       CASKET_RETURN_STACKTRACE_IN_BODY: 1
 
-  images:
+  blobs:
     build:
       context: .
       args:
-        SERVICE_NAME: images
-        KVSALT_PATH: secrets/tempkvsalt
+        SERVICE_NAME: blobs
+    ports:
+      - ${PLANTPOT_BLOBS_PORT}:8080
     volumes:
       - ./blobs:/blobs:rw
     environment:
       CASKET_RETURN_STACKTRACE_IN_BODY: 1
-
-    ports:
-      - ${PLANTPOT_OAUTH_PORT}:8080
+      PLANTPOT_BLOBS_DIR: /blobs
     depends_on:
-      - kvstore
       - monstermac
-    volumes:
-      - ./secrets:/run/secrets:ro
-    environment:
-      CASKET_RETURN_STACKTRACE_IN_BODY: 1
 
   tuliptheclown:
     build:
       context: .
-      args:
-        SERVICE_NAME: tuliptheclown
-        KVSALT_PATH: secrets/tuliptheclown_kvsalt
+      dockerfile: services/tuliptheclown/Dockerfile
 
     volumes:
       - ./secrets:/run/secrets:ro
@@ -101,4 +109,4 @@ services:
       - db
       - kvstore
       - oauth
-      - websocket
+      - rabbitmq

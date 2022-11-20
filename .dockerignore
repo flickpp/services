@@ -1,6 +1,9 @@
+__pycache__
 **/__pycache__
 dbdata
 run
 secrets/0000
 tuliptheclown/tulipemail
 blobs/
+venv/
+sql/

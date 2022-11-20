@@ -16,6 +16,6 @@ COPY clients clients
 COPY models models
 COPY schemas schemas
 
-COPY services/${SERVICE_NAME}.py service.py
+COPY services/tuliptheclown tuliptheclown
 
-CMD ["casket", "service:app"]
+CMD ["casket", "tuliptheclown/tuliptheclown:app"]

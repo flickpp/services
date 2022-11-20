@@ -1,0 +1,14 @@
+
+FROM python:3.7-buster
+
+COPY rabbit-tail /app
+WORKDIR /app
+
+COPY requirements.txt requirements.txt
+RUN pip install -r requirements.txt
+
+COPY clients clients
+COPY lib lib
+COPY schemas schemas
+
+CMD ["python", "service.py"]

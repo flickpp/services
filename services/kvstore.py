@@ -1,37 +1,51 @@
 from datetime import datetime, timedelta
 
-from framework import post_json_endpoint, get_json_endpoint, EmptyResponse, bad_request, app
-from schemas import InsertKVValuesReq, RetrieveKVValuesResp, is_hexstring
-from lib.jsonvalidator import JSONValidator
+from plantpot import Plantpot, bad_request
+from schemas.kvstore import InsertKVValuesReq, RetrieveKVValuesResp
+from lib import is_hexstring
 
-from kvstore.model import Value
+from models.kvstore import Value
+
+app = Plantpot('kvstore')
 
 
-def insert(body, **params):
+@app.json(path="/insert",
+          methods=["POST"],
+          req_schema=InsertKVValuesReq,
+          resp_status="202 Created")
+def insert(body):
+    now = datetime.now()
+
     for v in body['values']:
         expiry_time = datetime.fromtimestamp(v['expiryTime'])
-        if expiry_time < datetime.now() + timedelta(seconds=5):
+        if expiry_time < now + timedelta(seconds=5):
             raise bad_request("Bad Expiry Time", "expiry time is in the past")
 
         xor_key = bytes.fromhex(v['xorKey'])
         key_hash = bytes.fromhex(v['key'])
 
-        ins = Value.insert(key_hash=key_hash, xor_key=xor_key, value_str=v['value'], expiry_time=expiry_time)
+        ins = Value.insert(key_hash=key_hash,
+                           xor_key=xor_key,
+                           value_str=v['value'],
+                           expiry_time=expiry_time)
         ins.on_conflict_replace().execute()
 
-    return EmptyResponse("202 Created", [])
 
-
-def retrieve(**params):
+@app.json(path="/retrieve",
+          pass_query=True,
+          resp_schema=RetrieveKVValuesResp)
+def retrieve(**query):
     keys = []
 
-    for k in params.get("key", []):
+    for k in query.get("key", []):
         if len(k) != 32 or not is_hexstring(k):
-            raise bad_request("Invalid Key", "keys must be hexstrings of 32 chars")
+            raise bad_request("Invalid Key",
+                              "keys must be hexstrings of 32 chars")
         keys.append(bytes.fromhex(k))
 
     if not keys:
-        raise bad_request("Missing Key", "the url must include at least one key param")
+        raise bad_request("Missing Key",
+                          "the url must include at least one key param")
 
     expr = Value.key_hash == keys[0]
     for k in keys[1:]:
@@ -64,7 +78,3 @@ def retrieve(**params):
             })
 
     return dict(values=values)
-
-
-post_json_endpoint("/insert", JSONValidator(InsertKVValuesReq), insert, require_session_id=False)
-get_json_endpoint("/retrieve", JSONValidator(RetrieveKVValuesResp), retrieve, require_session_id=False)

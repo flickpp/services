@@ -1,80 +1,61 @@
-import hmac
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import os
-from time import time
-from hashlib import sha256, md5
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from datetime import datetime
-from base64 import urlsafe_b64encode, urlsafe_b64decode
-from urllib.parse import urlparse, urlunparse, ParseResult as URL
+from hashlib import sha256
 
 from casket import logger
 
-from peewee import IntegrityError
-import mako as mk
 from mako.template import Template
 
-from framework import (
-    app,
-    post_json_endpoint,
-    EmptyResponse,
-    get_json_endpoint,
-    get_html_endpoint,
-    bad_request,
-    access_denied,
-    Redirect,
-)
-from schemas import (
-    MessagesResp,
-    ContactQueryResp,
-    NewContactReq,
-    NewContactResp,
-    NewReviewReq,
-    NewReviewResp,
-    NewReviewResponseReq,
-    is_email_val,
-    is_phone_val,
-)
-from clients import (
-    kvstore_insert,
-    kvstore_retrieve,
-    oauth_retrieve,
-    ws_send_login_ids,
-    rabbitmq_send_email,
-)
+from clients.exceptions import ClientError
+from clients.kvstore import insert as kv_insert
+from clients.kvstore import retrieve as kv_retrieve
+from clients.rabbitmq import send_email as rabbitmq_send_email
 from lib import xor_encrypt
-from lib.jsonvalidator import JSONValidator
-from lib.tokens import parse_login_token
+from lib.tokens import build_user_token
+from models.tuliptheclown import Contact, Event, Message, Review
+from plantpot import (Plantpot, UrlParamArg, already_created, bad_request,
+                      forbidden)
+from schemas.tuliptheclown import (ContactQueryResp, EventResp, EventsResp,
+                                   MessagesResp, NewContactReq, NewContactResp,
+                                   NewEventReq, NewEventResp, NewMessageReq,
+                                   NewReviewReq, NewReviewResp, ReviewsResp,
+                                   NewReviewResponseReq)
+from schemas.validators import email_addr_val, phone_val
 
-from tuliptheclown.model import Message, Contact, Review, Event
-from tuliptheclown.schemas import (
-    EventResp,
-    EventsResp,
-    ReviewsResp,
-    NewEventReq,
-    NewEventResp,
-    NewMessageReq,
-)
-
-THROTTLE_TIMEOUT = int(
-    os.environ.get("PLANTPOT_TULIPTHECLOWN_MESSAGE_TIMEOUT", 7200))
+app = Plantpot('tuliptheclown')
 
 EMAIL_FILE = os.environ.get("PLANTPOT_TULIPTHECLOWN_EMAIL_FILE",
                             "/run/secrets/tulipemail")
 TULIP_EMAIL = open(EMAIL_FILE).read()
+THROTTLE_TIMEOUT = int(
+    os.environ.get('PLANTPOT_TULIPTHECLOWN_THROTTLE_TIMEOUT', "120"))
 
-LOGIN_IDS = [
-    "66b15f1c1f8f7b4fa0bcce9c8408cc1c",
-]
+MESSAGE_EMAIL_TEMPLATE = open('tuliptheclown/message-email').read()
+REVIEWS_TEMPLATE = Template(filename="tuliptheclown/reviews.html")
+ACCESS_DENIED = Template(filename="access_denied.html")
 
 USER_TOKEN_SALT_PATH = os.environ.get("PLANTPOT_USER_TOKEN_SALT_PATH",
                                       "/run/secrets/usertokensalt")
 USER_TOKEN_SALT = open(USER_TOKEN_SALT_PATH, 'rb').read()
 
-REVIEWS_TEMPLATE = Template(filename="reviews.html")
-ACCESS_DENIED = Template(filename="access_denied.html")
-MESSAGE_EMAIL_TEMPLATE = open("message-email").read()
+LOGIN_IDS = [
+    "66b15f1c1f8f7b4fa0bcce9c8408cc1c",
+]
 
 
-def new_message(ctx, session_id, body, **params):
+@app.json(
+    path="/message",
+    methods=['POST'],
+    pass_context=True,
+    req_schema=NewMessageReq,
+    require_session_id=True,
+    resp_status="202 Created",
+)
+def new_message(ctx, body, session_id):
     is_phone, is_email = phone_or_email(body['phoneOrEmail'])
 
     if is_phone:
@@ -83,61 +64,73 @@ def new_message(ctx, session_id, body, **params):
         contact_type = "email"
     else:
         raise bad_request("Invalid Contact",
-                          "contact is neither valid phone nor email")
+                          "Contact is neither valid phone nor email")
 
-    for val in kvstore_retrieve(ctx, session_id, body['phoneOrEmail']):
-        if val.value is not None:
-            return EmptyResponse("406 Already Created", [])
+    keys = (session_id, body['phoneOrEmail'])
 
-    logger.info(
-        "new contact", {
-            f"gdpr.{contact_type}": body['phoneOrEmail'],
-            "gdpr.name": body['name'],
-            "session_id": session_id,
+    try:
+        for val in kv_retrieve(ctx, 'tuliptheclown.contact', *keys).values():
+            if val.value is not None:
+                raise already_created()
+    except ClientError as exc:
+        logger.error("couldn't insert to kvstore - there is no throttle", {
+            "error": str(exc),
         })
 
     contact_id = compute_contact_id(body['name'], body['phoneOrEmail'])
-    name = bytes(body['name'], encoding='utf8')
-    xor_key = os.urandom(min(len(name), 8))
-    name = xor_encrypt(xor_key, name)
 
     # Save the contact details if they don't exist
-    ins = Contact.insert(contact_id=contact_id,
-                         name_=name,
-                         xor_key=xor_key,
-                         contact_type=contact_type,
-                         phone_or_email=body['phoneOrEmail'])
-    ins.on_conflict_ignore().execute()
+    xor_key = os.urandom(8)
+    name = xor_encrypt(xor_key, bytes(body['name'], encoding='utf8'))
+    Contact.insert(
+        contact_id=contact_id,
+        name_=name,
+        xor_key=xor_key,
+        contact_type=contact_type,
+        phone_or_email=body['phoneOrEmail'],
+    ).on_conflict_ignore().execute()
 
     # Save the message
     xor_key = os.urandom(16)
-    message = bytes(body['message'], encoding='utf8')
-    message = xor_encrypt(xor_key, message)
+    message = xor_encrypt(xor_key, bytes(body['message'], encoding='utf8'))
     Message.create(contact_id=contact_id, message=message, xor_key=xor_key)
 
-    if kvstore_insert(ctx, {
-            session_id: b"1",
-            body['phoneOrEmail']: b"2"
-    }, THROTTLE_TIMEOUT) != 2:
-        logger.warn(
-            f"couldn't insert session_id and {contact_type} into k/v store - there is no throttle",
-            {
-                "session_id": session_id,
-                f"gdpr.{contact_type}": body['phoneOrEmail'],
+    logger.info("new message", {
+        "gdpr.name": body['name'],
+        f"gdpr.{contact_type}": body['phoneOrEmail'],
+    })
+
+    # Insert into throttle
+    mapping = {session_id: "1", body['phoneOrEmail']: "2"}
+    try:
+        kv_insert(ctx, 'tuliptheclown.contact', mapping, THROTTLE_TIMEOUT)
+    except ClientError as exc:
+        logger.error(
+            "couldn't insert record to kvstore - there is no throttle", {
+                "error": str(exc),
             })
 
-    # Notify any active logged in users
-    ws_send_login_ids(LOGIN_IDS, "newMessage", body, schema=NewMessageReq)
+    # send email
+    try:
+        rabbitmq_send_email(ctx,
+                            TULIP_EMAIL,
+                            build_message_email(body),
+                            session_id=session_id)
+    except ClientError as exc:
+        logger.error("couldn't send msg to rabbitmq - there is no email", {
+            "error": str(exc),
+        })
 
-    # Write the email to rabbit
-    rabbitmq_send_email(ctx, TULIP_EMAIL, build_message_email(body), session_id=session_id)
 
-    return EmptyResponse("202 Accepted", [])
-
-
-def get_all_messages(session_id, login_id, **params):
+@app.json(
+    path="/messages",
+    methods=['GET'],
+    require_login_id=True,
+    resp_schema=MessagesResp,
+)
+def all_messages(login_id):
     if login_id not in LOGIN_IDS:
-        raise access_denied("login id not in whitelist")
+        raise forbidden("login id not valid")
 
     fields = (Message.message, Message.xor_key, Message.creation_time,
               Contact.name_, Contact.xor_key, Contact.phone_or_email,
@@ -163,23 +156,34 @@ def get_all_messages(session_id, login_id, **params):
     return dict(messages=messages)
 
 
-def contact_query(ctx, session_id, **params):
-    val = kvstore_retrieve(ctx, session_id)[0]
+@app.json(
+    path="/contact",
+    methods=['GET'],
+    pass_context=True,
+    require_session_id=True,
+    resp_schema=ContactQueryResp,
+)
+def contact_query(ctx, session_id):
+    val = kv_retrieve(ctx, 'tuliptheclown.contact', session_id)[session_id]
 
-    if val.expiry_time is None:
-        time_remaining = 0
-    else:
-        time_remaining = val.expiry_time - int(time())
-        time_remaining = max(0, time_remaining)
+    time_remaining = val.ttl or 0
 
     return {
         "timeRemaining": time_remaining,
     }
 
 
-def new_contact(session_id, login_id, body, **params):
+@app.json(
+    path="/contact",
+    methods=['POST'],
+    require_login_id=True,
+    req_schema=NewContactReq,
+    resp_status="202 Created",
+    resp_schema=NewContactResp,
+)
+def new_contact(body, login_id):
     if login_id not in LOGIN_IDS:
-        raise access_denied("login id not in whitelist")
+        raise forbidden("login id not valid")
 
     is_phone, is_email = phone_or_email(body['phoneOrEmail'])
     if is_phone:
@@ -193,7 +197,7 @@ def new_contact(session_id, login_id, body, **params):
     contact_id = compute_contact_id(body['name'], body['phoneOrEmail'])
 
     name = bytes(body['name'], encoding='utf8')
-    xor_key = os.urandom(min(len(name), 8))
+    xor_key = os.urandom(8)
     name = xor_encrypt(xor_key, name)
 
     # Save the contact details if they don't exist
@@ -210,8 +214,19 @@ def new_contact(session_id, login_id, body, **params):
     }
 
 
-def new_event(session_id, login_id, body, **params):
-    contact_id = new_contact(session_id, login_id, body, **params)['contactId']
+@app.json(
+    path="/event",
+    methods=['POST'],
+    require_login_id=True,
+    req_schema=NewEventReq,
+    resp_schema=NewEventResp,
+    resp_status="202 Created",
+)
+def new_event(body, login_id):
+    if login_id not in LOGIN_IDS:
+        raise forbidden("login id not valid")
+
+    contact_id = new_contact(body, login_id)['contactId']
 
     event_id = os.urandom(16)
     contact_id = bytes.fromhex(contact_id)
@@ -237,28 +252,35 @@ def new_event(session_id, login_id, body, **params):
 
     return {
         "eventId": str(urlsafe_b64encode(event_id), encoding='utf8'),
-        "userToken": build_user_token(contact_id),
+        "userToken": build_user_token(USER_TOKEN_SALT, contact_id),
     }
 
 
-def get_event(session_id, user_id, **params):
+def event_id_sanity(err, event_id):
     try:
-        event_id = params.get("event_id")
-        if event_id is None or len(event_id) != 1:
-            raise Exception("expected exactly one event_id in url params")
+        event_id = urlsafe_b64decode(event_id)
 
-        event_id = urlsafe_b64decode(event_id[0])
-        assert len(event_id) == 16, "event id must have length 16"
+        if len(event_id) != 16:
+            raise Exception("expected 16 bytes encoded")
 
     except Exception as exc:
-        raise bad_request("Invalid Event Id", str(exc))
+        raise err(f"invalid event_id url param {exc}")
 
+
+@app.json(
+    path="/event",
+    require_user_id=True,
+    param_args=[UrlParamArg("event_id", event_id_sanity)],
+    resp_schema=EventResp,
+)
+def get_event(user_id, event_id):
     contact_id = bytes.fromhex(user_id)
+    event_id = urlsafe_b64decode(event_id)
 
     filter = (Event.contact_id == contact_id) & (Event.event_id == event_id)
     ev = list(Event.select().where(filter))
     if not ev:
-        raise access_denied(
+        raise forbidden(
             "event id does not exist or does not belong to this user")
     ev = ev[0]
 
@@ -298,14 +320,20 @@ def get_event(session_id, user_id, **params):
     }
 
 
-def get_all_events(session_id, login_id, **params):
+@app.json(
+    path="/events",
+    require_login_id=True,
+    resp_schema=EventsResp,
+)
+def get_all_events(login_id):
     if login_id not in LOGIN_IDS:
-        raise access_denied("login id is not in whitelist")
+        raise forbidden("login id not valid")
 
     events = []
     for ev in Event.select().order_by(Event.date_.desc()).limit(30):
         event_id = str(urlsafe_b64encode(ev.event_id), encoding='utf8')
-        user_token = build_user_token(ev.contact_id.contact_id)
+        user_token = build_user_token(USER_TOKEN_SALT,
+                                      ev.contact_id.contact_id)
 
         events.append({
             "date": ev.date_.strftime("%a %d %b %Y"),
@@ -319,19 +347,26 @@ def get_all_events(session_id, login_id, **params):
     return dict(events=events)
 
 
-def new_review(session_id, user_id, body, **params):
+@app.json(
+    path="/review",
+    methods=['POST'],
+    require_user_id=True,
+    req_schema=NewReviewReq,
+    resp_schema=NewReviewResp,
+    resp_status="202 Created",
+)
+def new_review(body, user_id):
     contact_id = bytes.fromhex(user_id)
     event_id = urlsafe_b64decode(body['eventId'])
     review = bytes(body['review'], encoding='utf8')
     review_id = sha256(review).digest()[:16]
 
     # Does the event id exist and belong to this user?
-    query = list(
-        Event.select(Event.event_id,
-                     Event.contact_id).where(Event.contact_id == contact_id))
-    if not query or query[0].event_id != event_id:
-        raise access_denied(
-            "event Id does not exist or does not belong to this user")
+    filter = (Event.contact_id == contact_id) & (Event.event_id == event_id)
+    ev = list(Event.select().where(filter))
+    if not ev:
+        raise forbidden(
+            "event id does not exist or does not belong to this user")
 
     xor_key = os.urandom(16)
     review = xor_encrypt(xor_key, review)
@@ -351,9 +386,15 @@ def new_review(session_id, user_id, body, **params):
     }
 
 
-def get_all_reviews(session_id, login_id, **params):
+@app.json(
+    path="/review",
+    methods=['GET'],
+    require_login_id=True,
+    resp_schema=ReviewsResp,
+)
+def get_all_reviews(login_id):
     if login_id not in LOGIN_IDS:
-        raise access_denied("login id not in allowed whitelist")
+        raise forbidden("login id not valid")
 
     args = (
         Review.review_id,
@@ -379,17 +420,22 @@ def get_all_reviews(session_id, login_id, **params):
     for ev in Event.select(*args).where(Event.review_id.in_(review_ids)):
         event_id = str(urlsafe_b64encode(ev.review_id.review_id),
                        encoding='utf8')
-        user_token = build_user_token(ev.contact_id.contact_id)
+        user_token = build_user_token(USER_TOKEN_SALT, ev.contact_id.contact_id)
 
         reviews[ev.review_id.review_id]['eventId'] = event_id
         reviews[ev.review_id.review_id]['userToken'] = user_token
 
     return dict(reviews=list(reviews.values()))
 
-
-def review_response(session_id, login_id, body, **params):
+@app.json(
+    path='/review-response',
+    methods=['POST'],
+    require_login_id=True,
+    req_schema=NewReviewResponseReq,
+)
+def review_response(body, login_id):
     if login_id not in LOGIN_IDS:
-        raise access_denied("login id not in allowed whitelist")
+        raise forbidden("login id not valid")
 
     review_id = bytes.fromhex(body['reviewId'])
     data = {
@@ -401,10 +447,11 @@ def review_response(session_id, login_id, body, **params):
 
     Review.update(data).where(Review.review_id == review_id).execute()
 
-    return EmptyResponse("200 Ok", [])
 
-
-def get_reviews(session_id, **params):
+@app.html(
+    path="/reviews",
+)
+def get_reviews():
     args = (
         Review.review,
         Review.xor_key,
@@ -439,112 +486,34 @@ def get_reviews(session_id, **params):
     return REVIEWS_TEMPLATE.render(reviews=reviews)
 
 
-def login(ctx, session_id, **params):
-    login = oauth_retrieve(ctx, session_id)
-    if login is None:
-        return ACCESS_DENIED.render(
-            reason="no oauth login found for this session id")
-
-    if parse_login_token(login['loginToken']).login_id not in LOGIN_IDS:
-        return ACCESS_DENIED.render(reason="login not allowed for this user")
-
-    url = urlparse(bytes(login['currentUrl'], encoding='utf8'))
-    tk = bytes(login['loginToken'], encoding='utf8')
-
-    if url.query:
-        query = url.query + b'&login_tk=' + tk
-    else:
-        query = b'login_tk=' + tk
-
-    url = URL(url.scheme, url.netloc, url.path, url.params, query,
-              url.fragment)
-    raise Redirect("303 See Other", str(urlunparse(url), encoding='utf8'))
+@app.html(
+    path="/login",
+    pass_context=True,
+)
+def login(ctx):
+    return ACCESS_DENIED.render("login not allowed for this user")
 
 
-def build_message_email(body):
-    return MESSAGE_EMAIL_TEMPLATE.format(**body)
-
-
-def phone_or_email(phone_or_email):
+def phone_or_email(value):
     is_phone = True
     is_email = True
 
     try:
-        is_email_val(ValueError, phone_or_email)
+        email_addr_val(ValueError, value)
     except ValueError:
         is_email = False
 
     try:
-        is_phone_val(ValueError, phone_or_email)
+        phone_val(ValueError, value)
     except ValueError:
         is_phone = False
 
-    return (is_phone, is_email)
+    return is_phone, is_email
 
 
 def compute_contact_id(name, phone_or_email):
     return sha256(bytes(name + phone_or_email, encoding='utf8')).digest()[:16]
 
 
-def build_user_token(user_id):
-    mac = hmac.new(USER_TOKEN_SALT, msg=user_id, digestmod=sha256).digest()
-    token = urlsafe_b64encode(user_id + md5(mac).digest())
-    return str(token, encoding='utf8')
-
-
-post_json_endpoint("/message",
-                   JSONValidator(NewMessageReq),
-                   new_message,
-                   pass_context=True)
-
-get_json_endpoint("/messages",
-                  JSONValidator(MessagesResp),
-                  get_all_messages,
-                  require_login_id=True)
-
-get_json_endpoint("/contact",
-                  JSONValidator(ContactQueryResp),
-                  contact_query,
-                  pass_context=True)
-
-post_json_endpoint("/contact",
-                   JSONValidator(NewContactReq),
-                   new_contact,
-                   require_login_id=True,
-                   resp_schema_sanity=JSONValidator(NewContactResp))
-
-post_json_endpoint("/event",
-                   JSONValidator(NewEventReq),
-                   new_event,
-                   require_login_id=True,
-                   resp_schema_sanity=JSONValidator(NewEventResp))
-
-get_json_endpoint("/event",
-                  JSONValidator(EventResp),
-                  get_event,
-                  require_user_id=True)
-
-get_json_endpoint("/events",
-                  JSONValidator(EventsResp),
-                  get_all_events,
-                  require_login_id=True)
-
-post_json_endpoint("/review",
-                   JSONValidator(NewReviewReq),
-                   new_review,
-                   require_user_id=True,
-                   resp_schema_sanity=JSONValidator(NewReviewResp))
-
-get_json_endpoint("/review",
-                  JSONValidator(ReviewsResp),
-                  get_all_reviews,
-                  require_login_id=True)
-
-post_json_endpoint("/reviewResponse",
-                   JSONValidator(NewReviewResponseReq),
-                   review_response,
-                   require_login_id=True)
-
-get_html_endpoint("/reviews", get_reviews)
-
-get_html_endpoint("/login", login, pass_context=True)
+def build_message_email(body):
+    return MESSAGE_EMAIL_TEMPLATE.format(**body)

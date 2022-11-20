@@ -1,151 +1,113 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import pickle
 import os
-from hashlib import sha256
-from base64 import b64encode, b64decode
 from collections import namedtuple
 from time import time
+from hashlib import md5
+from base64 import b64encode, b64decode
 
 import requests
-import skein
 
-from casket import logger
+from lib import xor_encrypt, traceparent
+from lib.doolally import validate as validate_json, ValidationError
+from clients.exceptions import CallFailed, BadResponsePayload
+from schemas.kvstore import RetrieveKVValuesResp
 
-from schemas import RetrieveKVValuesResp
-from lib.doolally import validate as validate_json
+KVSTORE_ADDR = os.environ.get('PLANTPOT_KVSTORE_ADDR', 'kvstore:8080')
+INSERT_URL = f"http://{KVSTORE_ADDR}/insert"
+RETRIEVE_URL = f"http://{KVSTORE_ADDR}/retrieve"
 
-
-KV_STORE_HOST = os.environ.get("PLANTPOT_KV_STORE_HOST", "kvstore:8080").split(':')
-if len(KV_STORE_HOST) == 2:
-    KV_STORE_PORT = int(KV_STORE_HOST[1])
-    KV_STORE_HOST = KV_STORE_HOST[0]
-elif len(KV_STORE_HOST) == 1:
-    KV_STORE_HOST = KV_STORE_HOST[0]
-    KV_STORE_PORT = 8080
-else:
-    raise ValueError("invalid PLANTPOT_KV_STORE_HOST value")
+KvValue = namedtuple('KVValue', ('value', 'ttl'))
 
 
-URL_INSERT = f"http://{KV_STORE_HOST}:{KV_STORE_PORT}/insert"
-URL_RETRIEVE = f"http://{KV_STORE_HOST}:{KV_STORE_PORT}/retrieve"
-XOR_KEY_LEN = 32
-KEY_SALT_PATH = os.environ.get("PLANTPOT_TEMPKV_KEY_SALT_PATH", "/run/secrets/kvsalt")
-KEY_SALT = open(KEY_SALT_PATH, 'rb').read()
-XOR_KEY_ENC_PATH = os.environ.get("PLANTPOT_TEMPKV_ENC_KEY_PATH", "/run/secrets/kvenckey")
-XOR_KEY_ENC = open(XOR_KEY_ENC_PATH, 'rb').read()
-
-assert(len(XOR_KEY_ENC) == XOR_KEY_LEN), "XOR_KEY_ENC not same length as XOR_KEY_LEN"
-
-
-KvValue = namedtuple("KvValue", ("key", "value", "expiry_time"))
-
-
-def insert(ctx, mapping, ttl):
+def insert(ctx, prefix, mapping, ttl):
+    payload = []
     expiry_time = int(time()) + ttl
 
-    values = []
-    inner_keys = []
-    inner_tweaks = []
     for k, v in mapping.items():
-        pair = sha256(KEY_SALT + bytes(k, encoding='utf8')).digest()
-        inner_key = pair[:16].hex()
-        tweak = pair[16:]
+        xor_key = os.urandom(32)
+        value = xor_encrypt(xor_key, pickle.dumps(v))
 
-        if isinstance(v, str):
-            v = bytes(v, encoding='utf8')
-
-        xor_key = os.urandom(XOR_KEY_LEN)
-        value = xor_encrypt(xor_key, v)
-        xor_key_enc = skein.threefish(XOR_KEY_ENC, tweak).encrypt_block(xor_key).hex()
-
-        values.append({
-            "key": inner_key,
+        payload.append({
+            "key": build_key(prefix, k),
             "value": str(b64encode(value), encoding='utf8'),
-            "xorKey": xor_key_enc,
+            "xorKey": xor_key.hex(),
             "expiryTime": expiry_time,
         })
 
     try:
         headers = {"Traceparent": traceparent(ctx)}
-        resp = requests.post(URL_INSERT, json={"values": values}, headers=headers)
-        if "x-error" in resp.headers:
-            raise Exception(resp.headers['x-error'])
+        resp = requests.post(INSERT_URL,
+                             headers=headers,
+                             json=dict(values=payload))
+        if "X-Error" in resp.headers:
+            raise Exception(resp.headers['X-Error'])
 
         if resp.status_code != 202:
-            raise Exception("not 202 response code")
-
-        return len(values)
+            raise Exception("expected 202 response from kvstore insert")
 
     except Exception as exc:
-        logger.error("couldn't insert values into k/v store", {
-            "error": str(exc),
-        })
-
-        return 0
+        raise CallFailed(f"failed to insert to kv store {exc}")
 
 
-def retrieve(ctx, *keys):
-    inner_keys = []
-    inner_tweaks = []
+def retrieve(ctx, prefix, *keys):
+    values = {}
+    now = int(time())
 
-    for k in keys:
-        pair = sha256(KEY_SALT + bytes(k, encoding='utf8')).digest()
-        inner_keys.append(pair[:16].hex())
-        inner_tweaks.append(pair[16:])
-
-    # retrieve the values
-    inner_values = retrieve_request(ctx, *inner_keys)
-    values = []
-
-    for (key, val, tweak) in zip(keys, inner_values, inner_tweaks):
-        if val is None or val['value'] is None:
-            values.append(KvValue(key, None, None))
+    for (key, val) in zip(keys, retrieve_req(ctx, prefix, *keys)):
+        if val['value'] is None:
+            # We didn't find it
+            values[key] = KvValue(None, None)
             continue
 
-        xor_key_enc = bytes.fromhex(val['xorKey'])
-        xor_key = skein.threefish(XOR_KEY_ENC, tweak).decrypt_block(xor_key_enc)
-        val['value'] = b64decode(val['value'])
-        val['value'] = xor_encrypt(xor_key, val['value'])
+        xor_key = bytes.fromhex(val['xorKey'])
+        value = xor_encrypt(xor_key, b64decode(val['value']))
+        value = pickle.loads(value)
 
-        val['key'] = key
-        del val['xorKey']
+        ttl = val['expiryTime'] - now
 
-        values.append(KvValue(key, val['value'], val['expiryTime']))
+        values[key] = KvValue(value, ttl)
 
     return values
-        
 
-def retrieve_request(ctx, *keys):
-    url = URL_RETRIEVE + '?'
-    for n, k in enumerate(keys):
-        if n != 0:
-            url += '&'
 
-        url += f"key={k}"
+def retrieve_req(ctx, prefix, *keys):
+    url = RETRIEVE_URL
+
+    for (n, k) in enumerate(keys):
+        if n == 0:
+            url += f'?key={build_key(prefix, k)}'
+        else:
+            url += f'&key={build_key(prefix, k)}'
 
     try:
-        resp = requests.get(url, headers={"Traceparent": traceparent(ctx)})
+        headers = {"Traceparent": traceparent(ctx)}
+        resp = requests.get(url, headers=headers)
+
+        if "X-Error" in resp.headers:
+            raise Exception(resp.headers['X-Error'])
+
         if resp.status_code != 200:
-            raise Exception("call to kvstore retrieve did not return 200 status code")
+            raise Exception("expected 200 response status")
 
         body = resp.json()
         validate_json(body, RetrieveKVValuesResp)
+
+        if len(body['values']) != len(keys):
+            raise Exception("kvstore didn't return expected number of values")
+
         return body['values']
 
+    except ValidationError as exc:
+        raise BadResponsePayload(
+            f"kvstore returned bad response payload {exc}")
+
     except Exception as exc:
-        logger.error("failed to retrieve keys from kvstore", {
-            "error": str(exc),
-        })
-
-        return [None] * len(keys)
+        raise CallFailed(f'call to kvstore retrieve failed {exc}')
 
 
-def xor_encrypt(xor_key, data):
-    data = bytearray(data)
-
-    for n in range(0, len(data)):
-        data[n] ^= xor_key[n % XOR_KEY_LEN]
-
-    return bytes(data)
-
-
-def traceparent(ctx):
-    return f"00-{ctx.trace_id}-{ctx.span_id}-00"
+def build_key(prefix, key):
+    key = bytes(prefix + key, encoding='utf8')
+    return md5(key).digest().hex()

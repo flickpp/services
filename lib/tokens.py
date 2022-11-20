@@ -5,6 +5,7 @@ from hashlib import sha256, md5
 from os import urandom, environ
 from time import time
 from base64 import urlsafe_b64encode, urlsafe_b64decode
+from urllib.parse import ParseResult as URL
 
 # Set expiry time to 2 minutes
 EXPIRY_TIME = 60 * 2
@@ -20,7 +21,19 @@ def build_login_token(salt, login_id):
     flags = b'\x00' * 8
 
     tk = b'\x00' + urandom(8) + expiry_time + login_id + flags
-    return urlsafe_b64encode(tk + compute_mac(salt, tk))
+    tk = urlsafe_b64encode(tk + compute_mac(salt, tk))
+    return str(tk, encoding='utf8')
+
+
+def append_login_token(url, salt, login_id):
+    login_tk = build_login_token(salt, login_id)
+
+    if url.query:
+        query = url.query + b'&login_tk=' + login_tk
+    else:
+        query = b'login_tk=' + login_tk
+
+    return URL(url.scheme, url.netloc, url.path, url.params, query, url.fragment)
 
 
 LoginToken = namedtuple("LoginToken", ("login_id", "expiry_time"))
@@ -46,6 +59,12 @@ def parse_login_token(tk):
     login_id = tk[17:33].hex()
 
     return LoginToken(login_id, expiry_time)
+
+
+def build_user_token(salt, user_id):
+    mac = hmac.new(salt, msg=user_id, digestmod=sha256).digest()
+    token = urlsafe_b64encode(user_id + md5(mac).digest())
+    return str(token, encoding='utf8')
 
 
 def build_blob_token(blob_id, extension, key):
@@ -88,7 +107,7 @@ def read_blob_token(tk, key):
     if mac != hmac.new(key, blob_id, digestmod=sha256).digest()[:16]:
         raise TokenError("invalid token digest")
 
-    return blob_id, content_type
+    return blob_id.hex(), content_type
 
 
 def compute_mac(salt, data):
